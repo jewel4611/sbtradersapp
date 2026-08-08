@@ -170,14 +170,21 @@ export default function Root() {
     return (
       <div style={{ background: PAPER }} className="min-h-screen flex items-center justify-center p-4">
         <SetupWizard onCreate={async (admin, manager) => {
-          for (const person of [admin, manager]) {
+          const people = [admin, manager];
+          for (let i = 0; i < people.length; i++) {
+            const person = people[i];
             const uid = await registerAuthAccount(person.username, person.pin);
             const sDb = getSecondaryDb();
             // Written using the SECONDARY session (signed in as the brand
             // new user) while first-run setup is still open.
             await setDoc(doc(sDb, "users", uid), { name: person.name, username: person.username, role: person.role, active: true, tabs: [] });
             await setDoc(doc(sDb, "directory", uid), { name: person.name, username: person.username, role: person.role, active: true });
-            await setDoc(doc(sDb, "meta", "setupComplete"), { done: true });
+            if (i === people.length - 1) {
+              // Only flip the bootstrap flag once BOTH accounts are fully
+              // written — and while still authenticated as this last new
+              // account, since the flag write also requires isSignedIn().
+              await setDoc(doc(sDb, "meta", "setupComplete"), { done: true });
+            }
             await resetSecondaryAuth();
           }
         }} />
@@ -229,22 +236,22 @@ function LogoMark({ size = 56, ring = true }) {
 }
 
 function SetupWizard({ onCreate }) {
-  const [admin, setAdmin] = useState({ name: "Jewel", pin: "", pin2: "" });
-  const [manager, setManager] = useState({ name: "Bahar", pin: "", pin2: "" });
+  const [personA, setPersonA] = useState({ name: "Jewel", pin: "", pin2: "" });
+  const [personB, setPersonB] = useState({ name: "Bahar", pin: "", pin2: "" });
   const [err, setErr] = useState("");
   const [saving, setSaving] = useState(false);
 
   const submit = async (e) => {
     e.preventDefault();
     if (saving) return;
-    if (admin.pin.length !== 6 || manager.pin.length !== 6) { setErr("PINs must be exactly 6 digits (Firebase requires 6+ character passwords)."); return; }
-    if (admin.pin !== admin.pin2 || manager.pin !== manager.pin2) { setErr("PIN and confirmation don't match."); return; }
-    if (!admin.name.trim() || !manager.name.trim()) { setErr("Please enter both names."); return; }
+    if (personA.pin.length !== 6 || personB.pin.length !== 6) { setErr("PINs must be exactly 6 digits (Firebase requires 6+ character passwords)."); return; }
+    if (personA.pin !== personA.pin2 || personB.pin !== personB.pin2) { setErr("PIN and confirmation don't match."); return; }
+    if (!personA.name.trim() || !personB.name.trim()) { setErr("Please enter both names."); return; }
     setSaving(true);
     try {
       await onCreate(
-        { name: admin.name.trim(), username: slugUser(admin.name), pin: admin.pin, role: "admin" },
-        { name: manager.name.trim(), username: slugUser(manager.name), pin: manager.pin, role: "manager" }
+        { name: personA.name.trim(), username: slugUser(personA.name), pin: personA.pin, role: "admin" },
+        { name: personB.name.trim(), username: slugUser(personB.name), pin: personB.pin, role: "admin" }
       );
     } catch (e2) {
       setErr(e2.message || "Could not create accounts.");
@@ -258,7 +265,7 @@ function SetupWizard({ onCreate }) {
         <LogoMark size={72} />
         <h1 className="font-display text-2xl mt-3 text-center" style={{ color: INK }}>Welcome to {COMPANY.name}</h1>
         <p className="text-xs text-slate-400 mt-0.5 text-center">{COMPANY.tagline}</p>
-        <p className="text-sm text-slate-500 mt-3 text-center">Set up your two core accounts to get started. Each needs a 6-digit PIN used to sign in — this becomes their real login password behind the scenes.</p>
+        <p className="text-sm text-slate-500 mt-3 text-center">Set up your two Admin accounts to get started. Each needs a 6-digit PIN used to sign in — this becomes their real login password behind the scenes.</p>
       </div>
       <Card className="p-6">
         <form onSubmit={submit} className="space-y-6">
@@ -268,20 +275,20 @@ function SetupWizard({ onCreate }) {
               <span className="text-xs text-slate-400">Full access — manages stock, sales, ledger and staff accounts</span>
             </div>
             <div className="grid grid-cols-3 gap-3">
-              <Field label="Name"><input className={inputCls} style={inputStyle} value={admin.name} onChange={(e) => setAdmin({ ...admin, name: e.target.value })} required /></Field>
-              <Field label="PIN"><input type="password" inputMode="numeric" maxLength={6} className={inputCls} style={inputStyle} value={admin.pin} onChange={(e) => setAdmin({ ...admin, pin: e.target.value.replace(/\D/g, "") })} required /></Field>
-              <Field label="Confirm PIN"><input type="password" inputMode="numeric" maxLength={6} className={inputCls} style={inputStyle} value={admin.pin2} onChange={(e) => setAdmin({ ...admin, pin2: e.target.value.replace(/\D/g, "") })} required /></Field>
+              <Field label="Name"><input className={inputCls} style={inputStyle} value={personA.name} onChange={(e) => setPersonA({ ...personA, name: e.target.value })} required /></Field>
+              <Field label="PIN"><input type="password" inputMode="numeric" maxLength={6} className={inputCls} style={inputStyle} value={personA.pin} onChange={(e) => setPersonA({ ...personA, pin: e.target.value.replace(/\D/g, "") })} required /></Field>
+              <Field label="Confirm PIN"><input type="password" inputMode="numeric" maxLength={6} className={inputCls} style={inputStyle} value={personA.pin2} onChange={(e) => setPersonA({ ...personA, pin2: e.target.value.replace(/\D/g, "") })} required /></Field>
             </div>
           </div>
           <div>
             <div className="flex items-center gap-2 mb-3">
-              <Pill color={TEAL}>Manager</Pill>
-              <span className="text-xs text-slate-400">Moderator power — everything except managing staff accounts</span>
+              <Pill color={GOLD}>Admin</Pill>
+              <span className="text-xs text-slate-400">Full access — manages stock, sales, ledger and staff accounts</span>
             </div>
             <div className="grid grid-cols-3 gap-3">
-              <Field label="Name"><input className={inputCls} style={inputStyle} value={manager.name} onChange={(e) => setManager({ ...manager, name: e.target.value })} required /></Field>
-              <Field label="PIN"><input type="password" inputMode="numeric" maxLength={6} className={inputCls} style={inputStyle} value={manager.pin} onChange={(e) => setManager({ ...manager, pin: e.target.value.replace(/\D/g, "") })} required /></Field>
-              <Field label="Confirm PIN"><input type="password" inputMode="numeric" maxLength={6} className={inputCls} style={inputStyle} value={manager.pin2} onChange={(e) => setManager({ ...manager, pin2: e.target.value.replace(/\D/g, "") })} required /></Field>
+              <Field label="Name"><input className={inputCls} style={inputStyle} value={personB.name} onChange={(e) => setPersonB({ ...personB, name: e.target.value })} required /></Field>
+              <Field label="PIN"><input type="password" inputMode="numeric" maxLength={6} className={inputCls} style={inputStyle} value={personB.pin} onChange={(e) => setPersonB({ ...personB, pin: e.target.value.replace(/\D/g, "") })} required /></Field>
+              <Field label="Confirm PIN"><input type="password" inputMode="numeric" maxLength={6} className={inputCls} style={inputStyle} value={personB.pin2} onChange={(e) => setPersonB({ ...personB, pin2: e.target.value.replace(/\D/g, "") })} required /></Field>
             </div>
           </div>
           {err && <div className="text-xs px-3 py-2 rounded-md" style={{ background: ROSE + "1a", color: ROSE }}>{err}</div>}
@@ -1324,14 +1331,17 @@ function UsersView({ users, currentUser, notify, notifyErr }) {
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState(null);
 
-  const saveStaff = async (data) => {
+  const activeAdminCount = users.filter((u) => u.role === "admin" && u.active !== false).length;
+  const isLastActiveAdmin = (u) => u.role === "admin" && u.active !== false && activeAdminCount <= 1;
+
+  const saveAccount = async (data) => {
     try {
       if (editing) {
-        // Editing never touches login credentials — just permissions/name.
-        const { name, tabs } = data;
-        await updateDoc(doc(db, "users", editing.id), { name, tabs });
-        await updateDoc(doc(db, "directory", editing.id), { name });
-        notify("Staff account updated");
+        // Editing never touches login credentials — just name/permissions.
+        const patch = editing.role === "admin" ? { name: data.name } : { name: data.name, tabs: data.tabs };
+        await updateDoc(doc(db, "users", editing.id), patch);
+        await updateDoc(doc(db, "directory", editing.id), { name: data.name });
+        notify("Account updated");
       } else {
         // 1) Register a real Firebase Auth login for this person (their
         //    PIN becomes their password) without disturbing the admin's
@@ -1339,32 +1349,38 @@ function UsersView({ users, currentUser, notify, notifyErr }) {
         const uid = await registerAuthAccount(data.username, data.pin);
         await resetSecondaryAuth();
         // 2) Write their profile + public directory entry as the admin.
-        await setDoc(doc(db, "users", uid), { name: data.name, username: data.username, role: "staff", active: true, tabs: data.tabs });
-        await setDoc(doc(db, "directory", uid), { name: data.name, username: data.username, role: "staff", active: true });
-        notify("Staff account created");
+        const tabs = data.role === "admin" ? [] : data.tabs;
+        await setDoc(doc(db, "users", uid), { name: data.name, username: data.username, role: data.role, active: true, tabs });
+        await setDoc(doc(db, "directory", uid), { name: data.name, username: data.username, role: data.role, active: true });
+        notify(data.role === "admin" ? "Admin account created" : "Staff account created");
       }
       setShowForm(false); setEditing(null);
     } catch (e) {
       notifyErr(e.code === "auth/email-already-in-use"
-        ? { message: "That name is already taken — try a slightly different name." }
+        ? { message: "That name is already taken — if you're re-adding someone after a failed setup, delete their old login in Firebase Console → Authentication first." }
         : e);
     }
   };
 
   const toggleActive = async (u) => {
+    if (u.id === currentUser.id) { notify("You can't deactivate your own account", "err"); return; }
+    if (!u.active && isLastActiveAdmin(u)) { /* reactivating is fine */ }
+    if (u.active !== false && isLastActiveAdmin(u)) { notify("Can't deactivate the last remaining Admin", "err"); return; }
     try {
       await updateDoc(doc(db, "users", u.id), { active: !u.active });
       await updateDoc(doc(db, "directory", u.id), { active: !u.active });
-      notify(u.active ? "Account deactivated" : "Account activated");
+      notify(u.active !== false ? "Account deactivated" : "Account activated");
     } catch (e) { notifyErr(e); }
   };
 
-  const removeStaff = async (u) => {
-    if (!confirm(`Remove staff account "${u.name}"? They will immediately lose access.`)) return;
+  const removeAccount = async (u) => {
+    if (u.id === currentUser.id) { notify("You can't remove your own account", "err"); return; }
+    if (isLastActiveAdmin(u)) { notify("Can't remove the last remaining Admin", "err"); return; }
+    if (!confirm(`Remove "${u.name}"'s account? They will immediately lose access.`)) return;
     try {
       await deleteDoc(doc(db, "users", u.id));
       await deleteDoc(doc(db, "directory", u.id));
-      notify("Staff account removed");
+      notify("Account removed");
     } catch (e) { notifyErr(e); }
   };
 
@@ -1373,9 +1389,9 @@ function UsersView({ users, currentUser, notify, notifyErr }) {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="font-display text-2xl" style={{ color: INK }}>Staff Accounts</h1>
-          <p className="text-sm text-slate-500 mt-0.5">Admin and Manager are fixed. Add limited staff accounts as needed.</p>
+          <p className="text-sm text-slate-500 mt-0.5">Add another Admin, or a limited Staff account for a specific job.</p>
         </div>
-        <PrimaryButton onClick={() => { setEditing(null); setShowForm(true); }}><UserPlus size={16} /> Add Staff Account</PrimaryButton>
+        <PrimaryButton onClick={() => { setEditing(null); setShowForm(true); }}><UserPlus size={16} /> Add Account</PrimaryButton>
       </div>
 
       <Card className="overflow-x-auto">
@@ -1401,14 +1417,14 @@ function UsersView({ users, currentUser, notify, notifyErr }) {
                   {u.active !== false ? <Pill color={EMERALD}>Active</Pill> : <Pill color={ROSE}>Inactive</Pill>}
                 </td>
                 <td className="px-4 py-3 text-right whitespace-nowrap">
-                  {u.role === "staff" ? (
+                  {u.id === currentUser.id ? (
+                    <span className="text-xs text-slate-300">that's you</span>
+                  ) : (
                     <>
                       <button onClick={() => { setEditing(u); setShowForm(true); }} className="text-xs font-medium px-2 py-1 rounded" style={{ color: GOLD }}><Pencil size={12} className="inline" /></button>
                       <button onClick={() => toggleActive(u)} className="text-xs font-medium px-2 py-1 rounded ml-1" style={{ color: TEAL }}><Power size={12} className="inline" /></button>
-                      <button onClick={() => removeStaff(u)} className="text-xs font-medium px-2 py-1 rounded ml-1" style={{ color: ROSE }}><Trash2 size={12} className="inline" /></button>
+                      <button onClick={() => removeAccount(u)} className="text-xs font-medium px-2 py-1 rounded ml-1" style={{ color: ROSE }}><Trash2 size={12} className="inline" /></button>
                     </>
-                  ) : (
-                    <span className="text-xs text-slate-300">fixed role</span>
                   )}
                 </td>
               </tr>
@@ -1417,7 +1433,7 @@ function UsersView({ users, currentUser, notify, notifyErr }) {
         </table>
       </Card>
 
-      {showForm && <StaffFormModal initial={editing} onClose={() => { setShowForm(false); setEditing(null); }} onSave={saveStaff} />}
+      {showForm && <StaffFormModal initial={editing} onClose={() => { setShowForm(false); setEditing(null); }} onSave={saveAccount} />}
     </div>
   );
 }
@@ -1425,6 +1441,7 @@ function UsersView({ users, currentUser, notify, notifyErr }) {
 function StaffFormModal({ initial, onClose, onSave }) {
   const [name, setName] = useState(initial?.name || "");
   const [pin, setPin] = useState("");
+  const [role, setRole] = useState(initial?.role || "staff");
   const [tabs, setTabs] = useState(initial?.tabs || ["dashboard", "sale"]);
   const [err, setErr] = useState("");
 
@@ -1434,40 +1451,55 @@ function StaffFormModal({ initial, onClose, onSave }) {
     e.preventDefault();
     if (!name.trim()) { setErr("Enter a name."); return; }
     if (!initial && pin.length !== 6) { setErr("PIN must be exactly 6 digits."); return; }
-    if (tabs.length === 0) { setErr("Give access to at least one section."); return; }
+    if (role === "staff" && tabs.length === 0) { setErr("Give access to at least one section."); return; }
     const data = initial
       ? { name: name.trim(), tabs }
-      : { name: name.trim(), username: slugUser(name), tabs, pin };
+      : { name: name.trim(), username: slugUser(name), tabs, pin, role };
     onSave(data);
   };
 
   return (
-    <Modal onClose={onClose} title={initial ? "Edit Staff Account" : "Add Staff Account"}>
+    <Modal onClose={onClose} title={initial ? "Edit Account" : "Add Account"}>
       <form onSubmit={submit} className="space-y-4">
-        <Field label="Staff name"><input autoFocus className={inputCls} style={inputStyle} value={name} onChange={(e) => setName(e.target.value)} required /></Field>
+        <Field label="Name"><input autoFocus className={inputCls} style={inputStyle} value={name} onChange={(e) => setName(e.target.value)} required /></Field>
+        {!initial && (
+          <div>
+            <div className="text-xs font-medium text-slate-600 mb-2">Role</div>
+            <div className="grid grid-cols-2 gap-2">
+              <label className="flex items-center gap-2 text-sm px-3 py-2 rounded-md border cursor-pointer" style={{ borderColor: role === "admin" ? GOLD : "#e7e0d3", background: role === "admin" ? "#fdf5e8" : "white" }}>
+                <input type="radio" name="role" checked={role === "admin"} onChange={() => setRole("admin")} /> Admin — full access
+              </label>
+              <label className="flex items-center gap-2 text-sm px-3 py-2 rounded-md border cursor-pointer" style={{ borderColor: role === "staff" ? GOLD : "#e7e0d3", background: role === "staff" ? "#fdf5e8" : "white" }}>
+                <input type="radio" name="role" checked={role === "staff"} onChange={() => setRole("staff")} /> Staff — limited access
+              </label>
+            </div>
+          </div>
+        )}
         {!initial && (
           <Field label="PIN (exactly 6 digits)">
             <input type="password" inputMode="numeric" maxLength={6} className={inputCls} style={inputStyle} value={pin} onChange={(e) => setPin(e.target.value.replace(/\D/g, ""))} />
           </Field>
         )}
         {initial && (
-          <div className="text-xs text-slate-400 -mt-1">PINs can only be changed by the staff member themselves, from their own "Change PIN" menu after logging in.</div>
+          <div className="text-xs text-slate-400 -mt-1">PINs can only be changed by the account holder themselves, from their own "Change PIN" menu after logging in.</div>
         )}
-        <div>
-          <div className="text-xs font-medium text-slate-600 mb-2">Give access to</div>
-          <div className="grid grid-cols-2 gap-2">
-            {STAFF_ASSIGNABLE_TABS.map((id) => {
-              const t = ALL_TABS.find((n) => n.id === id);
-              const checked = tabs.includes(id);
-              return (
-                <label key={id} className="flex items-center gap-2 text-sm px-3 py-2 rounded-md border cursor-pointer" style={{ borderColor: checked ? GOLD : "#e7e0d3", background: checked ? "#fdf5e8" : "white" }}>
-                  <input type="checkbox" checked={checked} onChange={() => toggleTab(id)} />
-                  {t.label}
-                </label>
-              );
-            })}
+        {(role === "staff" || (initial && initial.role === "staff")) && (
+          <div>
+            <div className="text-xs font-medium text-slate-600 mb-2">Give access to</div>
+            <div className="grid grid-cols-2 gap-2">
+              {STAFF_ASSIGNABLE_TABS.map((id) => {
+                const t = ALL_TABS.find((n) => n.id === id);
+                const checked = tabs.includes(id);
+                return (
+                  <label key={id} className="flex items-center gap-2 text-sm px-3 py-2 rounded-md border cursor-pointer" style={{ borderColor: checked ? GOLD : "#e7e0d3", background: checked ? "#fdf5e8" : "white" }}>
+                    <input type="checkbox" checked={checked} onChange={() => toggleTab(id)} />
+                    {t.label}
+                  </label>
+                );
+              })}
+            </div>
           </div>
-        </div>
+        )}
         {err && <div className="text-xs px-3 py-2 rounded-md" style={{ background: ROSE + "1a", color: ROSE }}>{err}</div>}
         <div className="flex justify-end gap-2 pt-2">
           <GhostButton onClick={onClose}>Cancel</GhostButton>
