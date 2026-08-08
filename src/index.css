@@ -1,0 +1,11 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url('https://fonts.googleapis.com/css2?family=Zilla+Slab:wght@500;600;700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+
+.font-display { font-family: 'Zilla Slab', serif; }
+.font-mono { font-family: 'IBM Plex Mono', monospace; }
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb { background: #d9d0bb; border-radius: 4px; }
+table.ledger td, table.ledger th { border-color: #e7e0d3; }

@@ -1,0 +1,84 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() { return request.auth != null; }
+
+    // The requester's own profile doc — cached by Firestore within a
+    // single rule evaluation, so calling this more than once is cheap.
+    function me() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+    function isActiveUser() { return isSignedIn() && me().active == true; }
+    function role() { return me().role; }
+    function isAdmin() { return isActiveUser() && role() == 'admin'; }
+    function isManager() { return isActiveUser() && role() == 'manager'; }
+    function isAdminOrManager() { return isAdmin() || isManager(); }
+
+    // True if the signed-in user is allowed into the given section
+    // ('dashboard' | 'stock' | 'sale' | 'invoices' | 'clients').
+    function hasTab(tab) {
+      return isActiveUser() && (
+        role() == 'admin' || role() == 'manager' ||
+        (role() == 'staff' && tab in me().tabs)
+      );
+    }
+
+    // One-time bootstrap gate: true once the initial Admin + Manager
+    // accounts have been created, so the open self-write rules below
+    // close automatically after first-run setup.
+    function setupDone() {
+      return exists(/databases/$(database)/documents/meta/setupComplete)
+        && get(/databases/$(database)/documents/meta/setupComplete).data.done == true;
+    }
+
+    // Public, non-sensitive name list so the login screen can be shown
+    // before anyone is authenticated. No PINs or permissions live here.
+    match /directory/{uid} {
+      allow read: if true;
+      allow write: if isAdmin() || (!setupDone() && isSignedIn() && request.auth.uid == uid);
+    }
+
+    // Full staff profile: role, tabs, active flag. Never contains a PIN —
+    // Firebase Auth verifies the PIN, this doc only carries permissions.
+    match /users/{uid} {
+      allow read: if isSignedIn() && (request.auth.uid == uid || isAdmin());
+      allow create: if isAdmin() || (!setupDone() && isSignedIn() && request.auth.uid == uid);
+      allow update, delete: if isAdmin();
+    }
+
+    match /meta/setupComplete {
+      allow read: if true;
+      allow create, update: if isSignedIn() && !setupDone();
+    }
+
+    match /products/{id} {
+      allow read: if hasTab('stock') || hasTab('sale') || hasTab('dashboard');
+      allow update: if hasTab('stock') || hasTab('sale') || isAdminOrManager();
+      allow create, delete: if hasTab('stock') || isAdminOrManager();
+    }
+
+    match /clients/{id} {
+      allow read: if hasTab('clients') || hasTab('sale') || hasTab('dashboard');
+      allow create: if hasTab('clients') || hasTab('sale');
+      allow update, delete: if isAdminOrManager();
+    }
+
+    match /invoices/{id} {
+      allow read: if hasTab('invoices') || hasTab('dashboard') || hasTab('clients');
+      allow create: if hasTab('sale');
+      allow update, delete: if isAdminOrManager();
+    }
+
+    match /payments/{id} {
+      allow read: if hasTab('clients') || hasTab('dashboard');
+      allow create: if hasTab('clients') || hasTab('sale');
+      allow update, delete: if isAdminOrManager();
+    }
+
+    match /meta/counters {
+      allow read: if isActiveUser();
+      allow write: if hasTab('sale');
+    }
+  }
+}
