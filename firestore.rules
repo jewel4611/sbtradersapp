@@ -32,6 +32,13 @@ service cloud.firestore {
         && get(/databases/$(database)/documents/meta/setupComplete).data.done == true;
     }
 
+    // True if the TARGET account (not the requester) has shielded itself
+    // from other admins via "Hide me from other admins" in Staff Accounts.
+    function targetIsShielded(uid) {
+      return exists(/databases/$(database)/documents/users/$(uid))
+        && get(/databases/$(database)/documents/users/$(uid)).data.get('shielded', false) == true;
+    }
+
     // Public, non-sensitive name list so the login screen can be shown
     // before anyone is authenticated. No PINs or permissions live here.
     match /directory/{uid} {
@@ -39,17 +46,31 @@ service cloud.firestore {
       allow write: if isAdmin() || (!setupDone() && isSignedIn() && request.auth.uid == uid);
     }
 
-    // Full staff profile: role, tabs, active flag. Never contains a PIN —
-    // Firebase Auth verifies the PIN, this doc only carries permissions.
+    // Full staff profile: role, tabs, active flag, shielded flag. Never
+    // contains a PIN — Firebase Auth verifies the PIN, not this doc.
     match /users/{uid} {
-      allow read: if isSignedIn() && (request.auth.uid == uid || isAdmin());
+      allow read: if isSignedIn() && (request.auth.uid == uid || (isAdmin() && !targetIsShielded(uid)));
       allow create: if isAdmin() || (!setupDone() && isSignedIn() && request.auth.uid == uid);
-      allow update, delete: if isAdmin();
+      // An admin can edit/remove anyone EXCEPT a shielded account. Anyone
+      // can always toggle the 'shielded' flag on their own doc, and only
+      // that flag — this is how self-shielding is enforced server-side,
+      // not just hidden in the UI.
+      allow update: if (isAdmin() && !targetIsShielded(uid))
+        || (request.auth.uid == uid && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['shielded']));
+      allow delete: if isAdmin() && !targetIsShielded(uid);
     }
 
     match /meta/setupComplete {
       allow read: if true;
       allow create, update: if isSignedIn() && !setupDone();
+    }
+
+    // Digital signature & seal images used on every invoice/challan.
+    // Any active account can read them (needed to view/print documents);
+    // only Admin or Manager can change them.
+    match /settings/{id} {
+      allow read: if isActiveUser();
+      allow write: if isAdminOrManager();
     }
 
     match /products/{id} {

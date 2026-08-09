@@ -3,7 +3,7 @@ import {
   LayoutDashboard, Package, ShoppingCart, Users, FileText, Plus, Search,
   Printer, X, Trash2, Pencil, AlertTriangle, Wallet, ArrowUpRight,
   ChevronRight, ChevronLeft, CheckCircle2, Menu, ShieldCheck, LogOut,
-  KeyRound, Lock, UserPlus, Power
+  KeyRound, Lock, UserPlus, Power, Settings as SettingsIcon, Upload
 } from "lucide-react";
 import {
   db, auth, emailFor, getSecondaryAuth, getSecondaryDb, resetSecondaryAuth
@@ -57,8 +57,8 @@ const STAFF_ASSIGNABLE_TABS = ALL_TABS.map((t) => t.id);
 
 function tabsForUser(user) {
   if (!user) return [];
-  if (user.role === "admin") return [...ALL_TABS.map((t) => t.id), "users"];
-  if (user.role === "manager") return ALL_TABS.map((t) => t.id);
+  if (user.role === "admin") return [...ALL_TABS.map((t) => t.id), "users", "settings"];
+  if (user.role === "manager") return [...ALL_TABS.map((t) => t.id), "settings"];
   return user.tabs && user.tabs.length ? user.tabs : ["dashboard"];
 }
 const roleLabel = (r) => (r === "admin" ? "Admin" : r === "manager" ? "Manager" : "Staff");
@@ -76,6 +76,7 @@ const col = {
 };
 const counterRef = doc(db, "meta", "counters");
 const setupRef = doc(db, "meta", "setupComplete");
+const brandingRef = doc(db, "settings", "branding");
 const withId = (snap) => snap.docs.map((d) => ({ id: d.id, ...d.data() }));
 
 // Creates a real Firebase Auth login (email+password, where the "password"
@@ -102,6 +103,7 @@ export default function Root() {
   const [payments, setPayments] = useState([]);
   const [allUsers, setAllUsers] = useState([]);
   const [counters, setCounters] = useState({ inv: 0 });
+  const [branding, setBranding] = useState({});
 
   // Public directory — always readable, drives the login screen list and
   // tells us whether first-run setup has happened yet.
@@ -141,6 +143,7 @@ export default function Root() {
       onSnapshot(col.invoices, (s) => setInvoices(withId(s)), () => {}),
       onSnapshot(col.payments, (s) => setPayments(withId(s)), () => {}),
       onSnapshot(counterRef, (s) => setCounters(s.exists() ? s.data() : { inv: 0 }), () => {}),
+      onSnapshot(brandingRef, (s) => setBranding(s.exists() ? s.data() : {}), () => {}),
     ];
     if (profile.role === "admin") {
       unsubs.push(onSnapshot(col.users, (s) => setAllUsers(withId(s)), () => {}));
@@ -217,6 +220,7 @@ export default function Root() {
       logout={() => signOut(auth)}
       users={allUsers} products={products} clients={clients}
       invoices={invoices} payments={payments} counters={counters}
+      branding={branding}
     />
   );
 }
@@ -359,12 +363,12 @@ function LoginScreen({ people, error, onLogin }) {
 
 /* ---------------------------------- Main App ---------------------------------- */
 
-function MainApp({ currentUser, logout, users, products, clients, invoices, payments, counters }) {
+function MainApp({ currentUser, logout, users, products, clients, invoices, payments, counters, branding }) {
   const allowed = tabsForUser(currentUser);
   const [tab, setTab] = useState(allowed[0] || "dashboard");
   const [navOpen, setNavOpen] = useState(false);
   const [activeClientId, setActiveClientId] = useState(null);
-  const [printInvoiceId, setPrintInvoiceId] = useState(null);
+  const [printDoc, setPrintDoc] = useState(null); // { id, kind: 'invoice' | 'challan' }
   const [toast, setToast] = useState(null);
   const [showChangePin, setShowChangePin] = useState(false);
 
@@ -375,10 +379,12 @@ function MainApp({ currentUser, logout, users, products, clients, invoices, paym
   const notifyErr = useCallback((e) => notify(e?.message || "Something went wrong", "err"), [notify]);
 
   const clientDue = useCallback((clientId) => {
+    const client = clients.find((c) => c.id === clientId);
+    const opening = client?.openingBalance || 0;
     const inv = invoices.filter((i) => i.clientId === clientId).reduce((s, i) => s + i.grandTotal, 0);
     const pay = payments.filter((p) => p.clientId === clientId).reduce((s, p) => s + p.amount, 0);
-    return inv - pay;
-  }, [invoices, payments]);
+    return opening + inv - pay;
+  }, [invoices, payments, clients]);
 
   const stockValue = useMemo(() => products.reduce((s, p) => s + p.qty * p.purchasePrice, 0), [products]);
   const totalSales = useMemo(() => invoices.reduce((s, i) => s + i.grandTotal, 0), [invoices]);
@@ -387,6 +393,9 @@ function MainApp({ currentUser, logout, users, products, clients, invoices, paym
 
   const visibleNav = ALL_TABS.filter((n) => allowed.includes(n.id));
   const canSeeUsers = allowed.includes("users");
+  const canSeeSettings = allowed.includes("settings");
+  const canEditRecords = currentUser.role === "admin" || currentUser.role === "manager";
+  const openPrint = (id, kind) => setPrintDoc({ id, kind });
 
   return (
     <div style={{ background: PAPER, fontFamily: "Inter, sans-serif" }} className="min-h-screen text-slate-900">
@@ -428,6 +437,15 @@ function MainApp({ currentUser, logout, users, products, clients, invoices, paym
                   <ShieldCheck size={17} /> Staff Accounts
                 </button>
               )}
+              {canSeeSettings && (
+                <button
+                  onClick={() => { setTab("settings"); setActiveClientId(null); setNavOpen(false); }}
+                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-md text-sm transition-colors ${tab === "settings" ? "text-white" : "text-stone-400 hover:text-stone-100 hover:bg-white/5"}`}
+                  style={tab === "settings" ? { background: "rgba(200,139,42,0.18)", borderLeft: `3px solid ${GOLD}` } : { borderLeft: "3px solid transparent" }}
+                >
+                  <SettingsIcon size={17} /> Settings
+                </button>
+              )}
             </nav>
             <div className="px-4 py-4 border-t border-white/10">
               <div className="flex items-center justify-between px-2">
@@ -458,7 +476,7 @@ function MainApp({ currentUser, logout, users, products, clients, invoices, paym
                 stockValue={stockValue} totalSales={totalSales} totalDue={totalDue}
                 lowStock={lowStock} invoices={invoices} clients={clients} clientDue={clientDue}
                 goTab={setTab} openClient={(id) => { setActiveClientId(id); setTab("clients"); }}
-                openInvoice={setPrintInvoiceId} allowed={allowed}
+                openInvoice={(id) => openPrint(id, "invoice")} allowed={allowed}
               />
             )}
             {tab === "stock" && allowed.includes("stock") && (
@@ -468,34 +486,47 @@ function MainApp({ currentUser, logout, users, products, clients, invoices, paym
               <NewSale
                 products={products} clients={clients}
                 notify={notify} notifyErr={notifyErr}
-                onDone={(id) => { setPrintInvoiceId(id); setTab("invoices"); }}
+                onDone={(id) => { openPrint(id, "invoice"); setTab("invoices"); }}
               />
             )}
             {tab === "invoices" && allowed.includes("invoices") && (
-              <InvoicesView invoices={invoices} clients={clients} onPrint={setPrintInvoiceId} />
+              <InvoicesView invoices={invoices} clients={clients} products={products} payments={payments} onPrint={openPrint}
+                canEdit={canEditRecords} notify={notify} notifyErr={notifyErr} />
             )}
             {tab === "clients" && allowed.includes("clients") && (
               <ClientsView
-                clients={clients} invoices={invoices} payments={payments}
+                clients={clients} invoices={invoices} payments={payments} products={products}
                 clientDue={clientDue} activeClientId={activeClientId} setActiveClientId={setActiveClientId}
-                notify={notify} notifyErr={notifyErr} onPrint={setPrintInvoiceId}
+                notify={notify} notifyErr={notifyErr} onPrint={openPrint} canEdit={canEditRecords}
               />
             )}
             {tab === "users" && canSeeUsers && (
               <UsersView users={users} currentUser={currentUser} notify={notify} notifyErr={notifyErr} />
             )}
-            {!allowed.includes(tab) && tab !== "users" && (
+            {tab === "settings" && canSeeSettings && (
+              <SettingsView branding={branding} notify={notify} notifyErr={notifyErr} />
+            )}
+            {!allowed.includes(tab) && tab !== "users" && tab !== "settings" && (
               <EmptyNote text="You don't have access to this section. Ask your admin if you need it." />
             )}
           </div>
         </main>
       </div>
 
-      {printInvoiceId && (
+      {printDoc && printDoc.kind === "invoice" && (
         <InvoiceModal
-          invoice={invoices.find((i) => i.id === printInvoiceId)}
-          client={clients.find((c) => c.id === (invoices.find((i) => i.id === printInvoiceId) || {}).clientId)}
-          onClose={() => setPrintInvoiceId(null)}
+          invoice={invoices.find((i) => i.id === printDoc.id)}
+          client={clients.find((c) => c.id === (invoices.find((i) => i.id === printDoc.id) || {}).clientId)}
+          branding={branding}
+          onClose={() => setPrintDoc(null)}
+        />
+      )}
+      {printDoc && printDoc.kind === "challan" && (
+        <ChallanModal
+          invoice={invoices.find((i) => i.id === printDoc.id)}
+          client={clients.find((c) => c.id === (invoices.find((i) => i.id === printDoc.id) || {}).clientId)}
+          branding={branding}
+          onClose={() => setPrintDoc(null)}
         />
       )}
 
@@ -929,7 +960,7 @@ function NewSale({ products, clients, notify, notifyErr, onDone }) {
         const invRef = doc(col.invoices);
         tx.set(invRef, {
           invoiceNo, challanNo, date, clientId, clientName: client.name,
-          items: cart.map((c) => ({ name: c.name, unit: c.unit, qty: c.qty, price: c.price, total: c.qty * c.price })),
+          items: cart.map((c) => ({ productId: c.productId, name: c.name, unit: c.unit, qty: c.qty, price: c.price, total: c.qty * c.price })),
           subtotal, discount: Number(discount || 0), grandTotal, paid: Number(paidNow || 0), due,
         });
 
@@ -1069,8 +1100,206 @@ function Row({ label, value, bold, color }) {
 
 /* ---------------------------------- Invoices list ---------------------------------- */
 
-function InvoicesView({ invoices, clients, onPrint }) {
+/* ---------------------------------- Edit Invoice (with correct stock reconciliation) ---------------------------------- */
+
+// Applies an edited invoice atomically: reverses the ORIGINAL item quantities
+// back into stock, then applies the NEW item quantities, validates nothing
+// goes negative, updates the invoice doc, and reconciles the auto-created
+// "payment at sale" record if the paid amount changed. Only items that carry
+// a productId (every invoice created after this feature shipped) get their
+// stock adjusted automatically — older items are left alone with a warning
+// shown in the UI.
+async function runEditInvoiceTransaction({ invoice, clientId, clientName, date, items, discount, paidNow, linkedPayment }) {
+  const subtotal = items.reduce((s, c) => s + c.qty * c.price, 0);
+  const grandTotal = Math.max(subtotal - Number(discount || 0), 0);
+  const newPaid = Number(paidNow || 0);
+  const due = Math.max(grandTotal - newPaid, 0);
+
+  return runTransaction(db, async (tx) => {
+    const oldQtyMap = {};
+    (invoice.items || []).forEach((it) => { if (it.productId) oldQtyMap[it.productId] = (oldQtyMap[it.productId] || 0) + it.qty; });
+    const newQtyMap = {};
+    items.forEach((it) => { if (it.productId) newQtyMap[it.productId] = (newQtyMap[it.productId] || 0) + it.qty; });
+
+    const affectedIds = Array.from(new Set([...Object.keys(oldQtyMap), ...Object.keys(newQtyMap)]));
+    const refs = affectedIds.map((id) => doc(db, "products", id));
+    const snaps = await Promise.all(refs.map((r) => tx.get(r)));
+
+    const stockUpdates = [];
+    for (let i = 0; i < affectedIds.length; i++) {
+      const snap = snaps[i];
+      if (!snap.exists()) continue; // product removed since — can't adjust it, skip
+      const id = affectedIds[i];
+      const delta = (oldQtyMap[id] || 0) - (newQtyMap[id] || 0); // +ve = give back, -ve = take more
+      const next = snap.data().qty + delta;
+      if (next < 0) throw new Error(`Not enough stock for ${snap.data().name} — this change would take it to ${next}.`);
+      stockUpdates.push({ ref: refs[i], qty: next });
+    }
+
+    const invRef = doc(db, "invoices", invoice.id);
+    tx.update(invRef, {
+      clientId, clientName, date,
+      items: items.map((c) => ({ productId: c.productId || null, name: c.name, unit: c.unit, qty: c.qty, price: c.price, total: c.qty * c.price })),
+      subtotal, discount: Number(discount || 0), grandTotal, paid: newPaid, due,
+      editedAt: todayISO(),
+    });
+
+    stockUpdates.forEach((u) => tx.update(u.ref, { qty: u.qty }));
+
+    if (linkedPayment) {
+      const payRef = doc(db, "payments", linkedPayment.id);
+      if (newPaid > 0) tx.update(payRef, { amount: newPaid });
+      else tx.delete(payRef);
+    } else if (newPaid > 0) {
+      const payRef = doc(col.payments);
+      tx.set(payRef, { clientId, amount: newPaid, date, note: `Payment at sale ${invoice.invoiceNo} (edited)`, invoiceId: invoice.id });
+    }
+  });
+}
+
+function EditInvoiceModal({ invoice, clients, products, payments, onClose, notify, notifyErr }) {
+  const [clientId, setClientId] = useState(invoice.clientId);
+  const [clientQuery, setClientQuery] = useState("");
+  const [date, setDate] = useState(invoice.date);
+  const [items, setItems] = useState(
+    (invoice.items || []).map((it) => ({ ...it, key: it.productId || it.name }))
+  );
+  const [productQuery, setProductQuery] = useState("");
+  const [discount, setDiscount] = useState(invoice.discount || 0);
+  const [paidNow, setPaidNow] = useState(invoice.paid || 0);
+  const [saving, setSaving] = useState(false);
+
+  const client = clients.find((c) => c.id === clientId);
+  const matchingClients = clientQuery ? clients.filter((c) => c.name.toLowerCase().includes(clientQuery.toLowerCase())).slice(0, 6) : [];
+  const matchingProducts = productQuery ? products.filter((p) => p.name.toLowerCase().includes(productQuery.toLowerCase())).slice(0, 6) : [];
+  const missingProductIds = items.some((it) => !it.productId);
+
+  const addItem = (p) => {
+    if (items.find((it) => it.productId === p.id)) { notify("Already in this invoice", "err"); return; }
+    setItems([...items, { productId: p.id, name: p.name, unit: p.unit, price: p.sellPrice, qty: 1, key: p.id }]);
+    setProductQuery("");
+  };
+  const updateQty = (key, qty) => setItems(items.map((it) => (it.key === key ? { ...it, qty } : it)));
+  const updatePrice = (key, price) => setItems(items.map((it) => (it.key === key ? { ...it, price } : it)));
+  const removeItem = (key) => setItems(items.filter((it) => it.key !== key));
+
+  const subtotal = items.reduce((s, c) => s + c.qty * c.price, 0);
+  const grandTotal = Math.max(subtotal - Number(discount || 0), 0);
+  const due = Math.max(grandTotal - Number(paidNow || 0), 0);
+
+  const save = async () => {
+    if (!clientId) { notify("Select a client", "err"); return; }
+    if (items.length === 0) { notify("Add at least one item", "err"); return; }
+    if (items.some((it) => it.qty <= 0)) { notify("Quantities must be greater than 0", "err"); return; }
+    setSaving(true);
+    try {
+      const linkedPayment = payments.find((p) => p.invoiceId === invoice.id);
+      await runEditInvoiceTransaction({ invoice, clientId, clientName: client.name, date, items, discount, paidNow, linkedPayment });
+      notify("Invoice updated and stock adjusted");
+      onClose();
+    } catch (e) {
+      notifyErr(e);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-40 flex items-center justify-center p-4" style={{ background: "rgba(20,28,46,0.45)" }}>
+      <div className="bg-white rounded-lg w-full max-w-2xl shadow-xl max-h-[90vh] overflow-y-auto">
+        <div className="flex items-center justify-between px-5 py-4 border-b" style={{ borderColor: "#e7e0d3" }}>
+          <div>
+            <h3 className="font-display text-lg" style={{ color: INK }}>Edit Invoice {invoice.invoiceNo}</h3>
+            <p className="text-xs text-slate-400">Challan {invoice.challanNo} — stock will be re-adjusted to match your changes.</p>
+          </div>
+          <button onClick={onClose}><X size={18} className="text-slate-400" /></button>
+        </div>
+        <div className="p-5 space-y-4">
+          {missingProductIds && (
+            <div className="text-xs px-3 py-2 rounded-md flex items-start gap-2" style={{ background: GOLD + "1a", color: "#8a5a00" }}>
+              <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+              One or more items on this invoice were created before item-level editing was supported, so their stock won't auto-adjust — check Stock manually if you change those lines.
+            </div>
+          )}
+
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Client">
+              {client ? (
+                <div className="flex items-center justify-between px-3 py-2 rounded-md border" style={{ borderColor: "#d9d0bb" }}>
+                  <span className="text-sm">{client.name}</span>
+                  <button onClick={() => setClientId("")} className="text-xs" style={{ color: ROSE }}>Change</button>
+                </div>
+              ) : (
+                <div className="relative">
+                  <input value={clientQuery} onChange={(e) => setClientQuery(e.target.value)} placeholder="Search client…" className={inputCls} style={inputStyle} />
+                  {matchingClients.length > 0 && (
+                    <div className="absolute z-10 mt-1 w-full border rounded-md divide-y bg-white shadow-md" style={{ borderColor: "#e7e0d3" }}>
+                      {matchingClients.map((c) => (
+                        <button key={c.id} type="button" onClick={() => { setClientId(c.id); setClientQuery(""); }} className="w-full text-left px-3 py-2 text-sm hover:bg-stone-50">{c.name}</button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </Field>
+            <Field label="Date"><input type="date" className={inputCls} style={inputStyle} value={date} onChange={(e) => setDate(e.target.value)} /></Field>
+          </div>
+
+          <div>
+            <div className="text-xs font-medium text-slate-600 mb-2">Items</div>
+            <div className="relative mb-2">
+              <Search size={15} className="absolute left-3 top-2.5 text-slate-400" />
+              <input value={productQuery} onChange={(e) => setProductQuery(e.target.value)} placeholder="Add another item…" className={inputCls} style={{ ...inputStyle, paddingLeft: "2rem" }} />
+              {matchingProducts.length > 0 && (
+                <div className="absolute z-10 mt-1 w-full border rounded-md divide-y bg-white shadow-md" style={{ borderColor: "#e7e0d3" }}>
+                  {matchingProducts.map((p) => (
+                    <button key={p.id} type="button" onClick={() => addItem(p)} className="w-full text-left px-3 py-2 text-sm hover:bg-stone-50 flex justify-between">
+                      <span>{p.name}</span><span className="text-slate-400 text-xs">{p.qty} {p.unit} avail</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="space-y-2">
+              {items.map((it) => (
+                <div key={it.key} className="flex items-center gap-2 px-3 py-2 rounded-md" style={{ background: "#f9f6ee" }}>
+                  <div className="flex-1 text-sm font-medium">{it.name}{!it.productId && <span className="text-[10px] ml-1" style={{ color: GOLD }}>(no stock link)</span>}</div>
+                  <input type="number" min={1} value={it.qty} onChange={(e) => updateQty(it.key, Number(e.target.value))} className="w-16 px-2 py-1 rounded border text-sm text-right" style={inputStyle} />
+                  <span className="text-xs text-slate-400 w-8">{it.unit}</span>
+                  <input type="number" step="0.01" value={it.price} onChange={(e) => updatePrice(it.key, Number(e.target.value))} className="w-24 px-2 py-1 rounded border text-sm text-right font-mono" style={inputStyle} />
+                  <div className="w-24 text-right text-sm font-semibold font-mono">{money(it.qty * it.price)}</div>
+                  <button onClick={() => removeItem(it.key)}><Trash2 size={15} style={{ color: ROSE }} /></button>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Discount (৳)"><input type="number" className={inputCls} style={inputStyle} value={discount} onChange={(e) => setDiscount(e.target.value)} /></Field>
+            <Field label="Total paid (৳)"><input type="number" className={inputCls} style={inputStyle} value={paidNow} onChange={(e) => setPaidNow(e.target.value)} /></Field>
+          </div>
+
+          <div className="pt-3 border-t space-y-1.5" style={{ borderColor: "#e7e0d3" }}>
+            <Row label="Subtotal" value={money(subtotal)} />
+            <Row label="Grand Total" value={money(grandTotal)} bold />
+            <Row label="Due" value={money(due)} color={due > 0 ? ROSE : EMERALD} bold />
+          </div>
+
+          <div className="flex justify-end gap-2 pt-2">
+            <GhostButton onClick={onClose}>Cancel</GhostButton>
+            <PrimaryButton onClick={save} disabled={saving}>{saving ? "Saving…" : "Save Changes"}</PrimaryButton>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------------- Invoices list ---------------------------------- */
+
+function InvoicesView({ invoices, clients, products, payments, onPrint, canEdit, notify, notifyErr }) {
   const [q, setQ] = useState("");
+  const [editingInvoice, setEditingInvoice] = useState(null);
   const sorted = [...invoices].sort((a, b) => b.date.localeCompare(a.date) || b.invoiceNo.localeCompare(a.invoiceNo));
   const filtered = sorted.filter((i) => i.invoiceNo.toLowerCase().includes(q.toLowerCase()) || i.clientName.toLowerCase().includes(q.toLowerCase()));
 
@@ -1105,31 +1334,39 @@ function InvoicesView({ invoices, clients, onPrint }) {
             )}
             {filtered.map((inv) => (
               <tr key={inv.id} className="border-b last:border-0 hover:bg-stone-50" style={{ borderColor: "#f0ebe0" }}>
-                <td className="px-4 py-3 font-mono text-xs">{inv.invoiceNo}</td>
+                <td className="px-4 py-3 font-mono text-xs">{inv.invoiceNo}{inv.editedAt && <span className="text-slate-400 ml-1">(edited)</span>}</td>
                 <td className="px-4 py-3">{inv.clientName}</td>
                 <td className="px-4 py-3 text-slate-500">{fmtDate(inv.date)}</td>
                 <td className="px-4 py-3 text-right font-mono">{money(inv.grandTotal)}</td>
                 <td className="px-4 py-3 text-right">
                   {inv.due > 0 ? <Pill color={ROSE}>{money(inv.due)}</Pill> : <Pill color={EMERALD}>Paid</Pill>}
                 </td>
-                <td className="px-4 py-3 text-right">
-                  <button onClick={() => onPrint(inv.id)} className="text-xs font-medium flex items-center gap-1 ml-auto" style={{ color: TEAL }}>
-                    <Printer size={13} /> View
-                  </button>
+                <td className="px-4 py-3 text-right whitespace-nowrap">
+                  <button onClick={() => onPrint(inv.id, "invoice")} className="text-xs font-medium ml-2" style={{ color: TEAL }}>Invoice</button>
+                  <button onClick={() => onPrint(inv.id, "challan")} className="text-xs font-medium ml-2" style={{ color: TEAL }}>Challan</button>
+                  {canEdit && <button onClick={() => setEditingInvoice(inv)} className="text-xs font-medium ml-2" style={{ color: GOLD }}><Pencil size={12} className="inline" /></button>}
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
       </Card>
+
+      {editingInvoice && (
+        <EditInvoiceModal
+          invoice={editingInvoice} clients={clients} products={products} payments={payments}
+          onClose={() => setEditingInvoice(null)} notify={notify} notifyErr={notifyErr}
+        />
+      )}
     </div>
   );
 }
 
 /* ---------------------------------- Clients & Ledger ---------------------------------- */
 
-function ClientsView({ clients, invoices, payments, clientDue, activeClientId, setActiveClientId, notify, notifyErr, onPrint }) {
+function ClientsView({ clients, invoices, payments, products, clientDue, activeClientId, setActiveClientId, notify, notifyErr, onPrint, canEdit }) {
   const [showForm, setShowForm] = useState(false);
+  const [editingClient, setEditingClient] = useState(null);
   const [q, setQ] = useState("");
   const active = clients.find((c) => c.id === activeClientId);
 
@@ -1141,21 +1378,36 @@ function ClientsView({ clients, invoices, payments, clientDue, activeClientId, s
     } catch (e) { notifyErr(e); }
   };
 
+  const saveClientEdit = async (data) => {
+    try {
+      await updateDoc(doc(db, "clients", editingClient.id), data);
+      setEditingClient(null);
+      notify("Client updated");
+    } catch (e) { notifyErr(e); }
+  };
+
   if (active) {
     return (
-      <ClientLedger
-        client={active} invoices={invoices.filter((i) => i.clientId === active.id)}
-        payments={payments.filter((p) => p.clientId === active.id)}
-        due={clientDue(active.id)}
-        onBack={() => setActiveClientId(null)}
-        onAddPayment={async (amount, date, note) => {
-          try {
-            await addDoc(col.payments, { clientId: active.id, amount, date, note });
-            notify("Payment recorded");
-          } catch (e) { notifyErr(e); }
-        }}
-        onPrint={onPrint}
-      />
+      <>
+        <ClientLedger
+          client={active} invoices={invoices.filter((i) => i.clientId === active.id)}
+          payments={payments.filter((p) => p.clientId === active.id)}
+          allPayments={payments} products={products} clients={clients}
+          due={clientDue(active.id)}
+          onBack={() => setActiveClientId(null)}
+          onAddPayment={async (data) => {
+            try {
+              await addDoc(col.payments, { clientId: active.id, ...data });
+              notify("Payment recorded");
+            } catch (e) { notifyErr(e); }
+          }}
+          onPrint={onPrint}
+          canEdit={canEdit}
+          notify={notify} notifyErr={notifyErr}
+          onEditClient={() => setEditingClient(active)}
+        />
+        {editingClient && <ClientFormModal initial={editingClient} onClose={() => setEditingClient(null)} onSave={saveClientEdit} />}
+      </>
     );
   }
 
@@ -1212,15 +1464,24 @@ function ClientsView({ clients, invoices, payments, clientDue, activeClientId, s
   );
 }
 
-function ClientLedger({ client, invoices, payments, due, onBack, onAddPayment, onPrint }) {
+function ClientLedger({ client, invoices, payments, allPayments, products, clients, due, onBack, onAddPayment, onPrint, canEdit, notify, notifyErr, onEditClient }) {
   const [showPay, setShowPay] = useState(false);
+  const [editingInvoice, setEditingInvoice] = useState(null);
+  const opening = client.openingBalance || 0;
+
   const entries = [
-    ...invoices.map((i) => ({ date: i.date, type: "invoice", ref: i.invoiceNo, debit: i.grandTotal, credit: 0, id: i.id })),
-    ...payments.map((p) => ({ date: p.date, type: "payment", ref: p.note || "Payment received", debit: 0, credit: p.amount, id: p.id })),
+    ...invoices.map((i) => ({ date: i.date, type: "invoice", ref: i.invoiceNo, invoiceId: i.id, debit: i.grandTotal, credit: 0, id: i.id })),
+    ...payments.map((p) => ({ date: p.date, type: "payment", ref: [p.method, p.reference].filter(Boolean).join(" · ") || p.note || "Payment received", debit: 0, credit: p.amount, id: p.id })),
   ].sort((a, b) => a.date.localeCompare(b.date));
 
-  let running = 0;
+  let running = opening;
   const withBalance = entries.map((e) => { running += e.debit - e.credit; return { ...e, balance: running }; });
+  if (opening !== 0) {
+    withBalance.unshift({ date: null, type: "opening", ref: "Opening Balance", debit: opening > 0 ? opening : 0, credit: opening < 0 ? -opening : 0, id: "opening", balance: opening });
+  }
+
+  const totalInvoiced = invoices.reduce((s, i) => s + i.grandTotal, 0) + (opening > 0 ? opening : 0);
+  const totalPaid = payments.reduce((s, p) => s + p.amount, 0) + (opening < 0 ? -opening : 0);
 
   return (
     <div className="space-y-5">
@@ -1230,16 +1491,19 @@ function ClientLedger({ client, invoices, payments, due, onBack, onAddPayment, o
 
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="font-display text-2xl" style={{ color: INK }}>{client.name}</h1>
+          <div className="flex items-center gap-2">
+            <h1 className="font-display text-2xl" style={{ color: INK }}>{client.name}</h1>
+            {canEdit && <button onClick={onEditClient} className="text-xs font-medium" style={{ color: GOLD }}><Pencil size={13} className="inline" /> Edit</button>}
+          </div>
           <p className="text-sm text-slate-500 mt-0.5">{client.phone} {client.address ? `· ${client.address}` : ""}</p>
         </div>
-        <div className="flex items-center gap-3">
-          <div className="text-right">
-            <div className="text-[11px] uppercase text-slate-500">Current Due</div>
-            <div className="font-display text-xl" style={{ color: due > 0 ? ROSE : EMERALD }}>{money(due)}</div>
-          </div>
-          <PrimaryButton onClick={() => setShowPay(true)}><Wallet size={16} /> Record Payment</PrimaryButton>
-        </div>
+        <PrimaryButton onClick={() => setShowPay(true)}><Wallet size={16} /> Record Payment</PrimaryButton>
+      </div>
+
+      <div className="grid grid-cols-3 gap-4">
+        <StatCard label="Total Invoiced" value={money(totalInvoiced)} icon={FileText} accent={TEAL} />
+        <StatCard label="Total Paid" value={money(totalPaid)} icon={Wallet} accent={EMERALD} />
+        <StatCard label="Current Due" value={money(due)} icon={AlertTriangle} accent={due > 0 ? ROSE : EMERALD} />
       </div>
 
       <Card className="overflow-x-auto">
@@ -1261,17 +1525,21 @@ function ClientLedger({ client, invoices, payments, due, onBack, onAddPayment, o
             )}
             {withBalance.map((e) => (
               <tr key={e.type + e.id} className="border-b last:border-0 hover:bg-stone-50" style={{ borderColor: "#f0ebe0" }}>
-                <td className="px-4 py-3 text-slate-500">{fmtDate(e.date)}</td>
+                <td className="px-4 py-3 text-slate-500">{e.date ? fmtDate(e.date) : "—"}</td>
                 <td className="px-4 py-3">
-                  {e.type === "invoice" ? <Pill color={TEAL}>Sale</Pill> : <Pill color={EMERALD}>Payment</Pill>}
+                  {e.type === "invoice" ? <Pill color={TEAL}>Sale</Pill> : e.type === "payment" ? <Pill color={EMERALD}>Payment</Pill> : <Pill color={GOLD}>Opening</Pill>}
                 </td>
                 <td className="px-4 py-3 font-mono text-xs">{e.ref}</td>
                 <td className="px-4 py-3 text-right font-mono">{e.debit ? money(e.debit) : "—"}</td>
                 <td className="px-4 py-3 text-right font-mono">{e.credit ? money(e.credit) : "—"}</td>
                 <td className="px-4 py-3 text-right font-mono font-semibold" style={{ color: e.balance > 0 ? ROSE : INK }}>{money(e.balance)}</td>
-                <td className="px-4 py-3 text-right">
+                <td className="px-4 py-3 text-right whitespace-nowrap">
                   {e.type === "invoice" && (
-                    <button onClick={() => onPrint(e.id)} className="text-xs font-medium flex items-center gap-1 ml-auto" style={{ color: TEAL }}><Printer size={13} /></button>
+                    <>
+                      <button onClick={() => onPrint(e.invoiceId, "invoice")} className="text-xs font-medium ml-1" style={{ color: TEAL }}>Inv</button>
+                      <button onClick={() => onPrint(e.invoiceId, "challan")} className="text-xs font-medium ml-1" style={{ color: TEAL }}>Ch</button>
+                      {canEdit && <button onClick={() => setEditingInvoice(invoices.find((i) => i.id === e.invoiceId))} className="text-xs font-medium ml-1" style={{ color: GOLD }}><Pencil size={12} className="inline" /></button>}
+                    </>
                   )}
                 </td>
               </tr>
@@ -1281,44 +1549,76 @@ function ClientLedger({ client, invoices, payments, due, onBack, onAddPayment, o
       </Card>
 
       {showPay && (
-        <PaymentModal client={client} onClose={() => setShowPay(false)} onSave={(amount, date, note) => { onAddPayment(amount, date, note); setShowPay(false); }} />
+        <PaymentModal client={client} onClose={() => setShowPay(false)} onSave={(data) => { onAddPayment(data); setShowPay(false); }} />
+      )}
+      {editingInvoice && (
+        <EditInvoiceModal
+          invoice={editingInvoice} clients={clients} products={products} payments={allPayments}
+          onClose={() => setEditingInvoice(null)} notify={notify} notifyErr={notifyErr}
+        />
       )}
     </div>
   );
 }
 
-function ClientFormModal({ onClose, onSave }) {
-  const [form, setForm] = useState({ name: "", phone: "", address: "" });
+function ClientFormModal({ initial, onClose, onSave }) {
+  const [form, setForm] = useState({
+    name: initial?.name || "", phone: initial?.phone || "", address: initial?.address || "",
+    openingBalance: initial?.openingBalance ?? 0,
+  });
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
-  const submit = (e) => { e.preventDefault(); if (!form.name) return; onSave({ name: form.name.trim(), phone: form.phone.trim(), address: form.address.trim() }); };
+  const submit = (e) => {
+    e.preventDefault();
+    if (!form.name) return;
+    onSave({
+      name: form.name.trim(), phone: form.phone.trim(), address: form.address.trim(),
+      openingBalance: Number(form.openingBalance) || 0,
+    });
+  };
   return (
-    <Modal onClose={onClose} title="Add Client">
+    <Modal onClose={onClose} title={initial ? "Edit Client" : "Add Client"}>
       <form onSubmit={submit} className="space-y-4">
         <Field label="Client / shop name"><input autoFocus className={inputCls} style={inputStyle} value={form.name} onChange={(e) => set("name", e.target.value)} required /></Field>
         <Field label="Phone"><input className={inputCls} style={inputStyle} value={form.phone} onChange={(e) => set("phone", e.target.value)} /></Field>
         <Field label="Address"><input className={inputCls} style={inputStyle} value={form.address} onChange={(e) => set("address", e.target.value)} /></Field>
+        <Field label="Opening balance (৳) — leave 0 if none">
+          <input type="number" className={inputCls} style={inputStyle} value={form.openingBalance} onChange={(e) => set("openingBalance", e.target.value)} />
+        </Field>
+        <div className="text-[11px] text-slate-400 -mt-2">Positive = client already owed you money before this app. Negative = client had a credit/advance with you.</div>
         <div className="flex justify-end gap-2 pt-2">
           <GhostButton onClick={onClose}>Cancel</GhostButton>
-          <PrimaryButton type="submit">Save Client</PrimaryButton>
+          <PrimaryButton type="submit">{initial ? "Save Changes" : "Save Client"}</PrimaryButton>
         </div>
       </form>
     </Modal>
   );
 }
 
+const PAYMENT_METHODS = ["Cash", "bKash", "Nagad", "Rocket", "Bank Transfer", "Cheque", "Other"];
+
 function PaymentModal({ client, onClose, onSave }) {
   const [amount, setAmount] = useState("");
   const [date, setDate] = useState(todayISO());
+  const [method, setMethod] = useState("Cash");
+  const [reference, setReference] = useState("");
   const [note, setNote] = useState("");
   return (
     <Modal onClose={onClose} title={`Record Payment — ${client.name}`}>
       <div className="space-y-4">
         <Field label="Amount received (৳)"><input type="number" autoFocus className={inputCls} style={inputStyle} value={amount} onChange={(e) => setAmount(e.target.value)} /></Field>
-        <Field label="Date"><input type="date" className={inputCls} style={inputStyle} value={date} onChange={(e) => setDate(e.target.value)} /></Field>
-        <Field label="Note (optional)"><input className={inputCls} style={inputStyle} value={note} onChange={(e) => setNote(e.target.value)} placeholder="e.g. Cash / bKash / Bank" /></Field>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Date"><input type="date" className={inputCls} style={inputStyle} value={date} onChange={(e) => setDate(e.target.value)} /></Field>
+          <Field label="Method">
+            <select className={inputCls} style={inputStyle} value={method} onChange={(e) => setMethod(e.target.value)}>
+              {PAYMENT_METHODS.map((m) => <option key={m} value={m}>{m}</option>)}
+            </select>
+          </Field>
+        </div>
+        <Field label="Reference / Transaction ID (optional)"><input className={inputCls} style={inputStyle} value={reference} onChange={(e) => setReference(e.target.value)} placeholder="e.g. bKash TrxID" /></Field>
+        <Field label="Note (optional)"><input className={inputCls} style={inputStyle} value={note} onChange={(e) => setNote(e.target.value)} /></Field>
         <div className="flex justify-end gap-2 pt-2">
           <GhostButton onClick={onClose}>Cancel</GhostButton>
-          <PrimaryButton onClick={() => amount && onSave(Number(amount), date, note)}>Save Payment</PrimaryButton>
+          <PrimaryButton onClick={() => amount && onSave({ amount: Number(amount), date, method, reference: reference.trim(), note: note.trim() })}>Save Payment</PrimaryButton>
         </div>
       </div>
     </Modal>
@@ -1333,6 +1633,12 @@ function UsersView({ users, currentUser, notify, notifyErr }) {
 
   const activeAdminCount = users.filter((u) => u.role === "admin" && u.active !== false).length;
   const isLastActiveAdmin = (u) => u.role === "admin" && u.active !== false && activeAdminCount <= 1;
+
+  // Only show accounts that are either not shielded, or are the viewer's
+  // own account — this is also enforced in firestore.rules, so a shielded
+  // account is genuinely hidden and untouchable to everyone else, not just
+  // hidden in this list.
+  const visibleUsers = users.filter((u) => !u.shielded || u.id === currentUser.id);
 
   const saveAccount = async (data) => {
     try {
@@ -1350,7 +1656,7 @@ function UsersView({ users, currentUser, notify, notifyErr }) {
         await resetSecondaryAuth();
         // 2) Write their profile + public directory entry as the admin.
         const tabs = data.role === "admin" ? [] : data.tabs;
-        await setDoc(doc(db, "users", uid), { name: data.name, username: data.username, role: data.role, active: true, tabs });
+        await setDoc(doc(db, "users", uid), { name: data.name, username: data.username, role: data.role, active: true, tabs, shielded: false });
         await setDoc(doc(db, "directory", uid), { name: data.name, username: data.username, role: data.role, active: true });
         notify(data.role === "admin" ? "Admin account created" : "Staff account created");
       }
@@ -1362,9 +1668,17 @@ function UsersView({ users, currentUser, notify, notifyErr }) {
     }
   };
 
+  const toggleShielded = async (u) => {
+    try {
+      // Rules only allow changing your OWN 'shielded' field — nobody
+      // else, including another Admin, can shield or unshield you.
+      await updateDoc(doc(db, "users", u.id), { shielded: !u.shielded });
+      notify(u.shielded ? "No longer hidden from other admins" : "Hidden from other admins — they can't see or remove this account");
+    } catch (e) { notifyErr(e); }
+  };
+
   const toggleActive = async (u) => {
     if (u.id === currentUser.id) { notify("You can't deactivate your own account", "err"); return; }
-    if (!u.active && isLastActiveAdmin(u)) { /* reactivating is fine */ }
     if (u.active !== false && isLastActiveAdmin(u)) { notify("Can't deactivate the last remaining Admin", "err"); return; }
     try {
       await updateDoc(doc(db, "users", u.id), { active: !u.active });
@@ -1406,7 +1720,7 @@ function UsersView({ users, currentUser, notify, notifyErr }) {
             </tr>
           </thead>
           <tbody>
-            {users.map((u) => (
+            {visibleUsers.map((u) => (
               <tr key={u.id} className="border-b last:border-0 hover:bg-stone-50" style={{ borderColor: "#f0ebe0" }}>
                 <td className="px-4 py-3 font-medium">{u.name}{u.id === currentUser.id && <span className="text-slate-400 font-normal text-xs"> (you)</span>}</td>
                 <td className="px-4 py-3"><Pill color={roleColor(u.role)}>{roleLabel(u.role)}</Pill></td>
@@ -1415,10 +1729,13 @@ function UsersView({ users, currentUser, notify, notifyErr }) {
                 </td>
                 <td className="px-4 py-3">
                   {u.active !== false ? <Pill color={EMERALD}>Active</Pill> : <Pill color={ROSE}>Inactive</Pill>}
+                  {u.shielded && <span className="ml-1"><Pill color={INK}>Hidden</Pill></span>}
                 </td>
                 <td className="px-4 py-3 text-right whitespace-nowrap">
                   {u.id === currentUser.id ? (
-                    <span className="text-xs text-slate-300">that's you</span>
+                    <button onClick={() => toggleShielded(u)} className="text-xs font-medium px-2 py-1 rounded" style={{ color: u.shielded ? EMERALD : TEAL }}>
+                      {u.shielded ? "Unhide me" : "Hide me from other admins"}
+                    </button>
                   ) : (
                     <>
                       <button onClick={() => { setEditing(u); setShowForm(true); }} className="text-xs font-medium px-2 py-1 rounded" style={{ color: GOLD }}><Pencil size={12} className="inline" /></button>
@@ -1553,7 +1870,50 @@ function Modal({ title, children, onClose }) {
 
 /* ---------------------------------- Invoice / Challan print view ---------------------------------- */
 
-function InvoiceModal({ invoice, client, onClose }) {
+function SignatureBlock({ branding }) {
+  return (
+    <div className="mt-10 grid grid-cols-2 gap-10 text-xs text-slate-600">
+      <div className="flex flex-col justify-end">
+        <div className="h-14" />
+        <div className="border-t pt-1" style={{ borderColor: "#999" }}>Receiver's Signature</div>
+      </div>
+      <div className="flex flex-col items-end justify-end">
+        <div className="h-14 flex items-end justify-end gap-2">
+          {branding?.signatureUrl && <img src={branding.signatureUrl} alt="" style={{ height: 40, objectFit: "contain" }} />}
+          {branding?.sealUrl && <img src={branding.sealUrl} alt="" style={{ height: 56, objectFit: "contain", opacity: 0.92 }} />}
+        </div>
+        <div className="border-t pt-1 w-full text-right" style={{ borderColor: "#999" }}>Authorized Signature</div>
+      </div>
+    </div>
+  );
+}
+
+function DocHeader({ invoice, docLabel }) {
+  return (
+    <>
+      <div className="flex items-start justify-between mb-4">
+        <div className="flex items-center gap-3">
+          <LogoMark size={48} />
+          <div>
+            <div className="font-display text-2xl leading-tight" style={{ color: INK }}>{COMPANY.name}</div>
+            <div className="text-xs font-medium" style={{ color: GOLD }}>{COMPANY.tagline}</div>
+          </div>
+        </div>
+        <div className="text-right text-xs text-slate-500">
+          <div className="font-display text-sm font-semibold uppercase tracking-wide" style={{ color: GOLD }}>{docLabel}</div>
+          <div className="font-mono text-sm font-semibold" style={{ color: INK }}>{docLabel === "Invoice" ? invoice.invoiceNo : invoice.challanNo}</div>
+          <div>{fmtDate(invoice.date)}</div>
+        </div>
+      </div>
+      <div className="text-center text-[11px] text-slate-500 leading-relaxed mb-6 pb-3 border-b" style={{ borderColor: "#e7e0d3" }}>
+        <div>Head Office: {COMPANY.address}</div>
+        <div>Hotline: {COMPANY.hotline}, Tel: {COMPANY.tel}, E-mail: {COMPANY.email}, Web: {COMPANY.web}</div>
+      </div>
+    </>
+  );
+}
+
+function InvoiceModal({ invoice, client, branding, onClose }) {
   if (!invoice) return null;
   const paidFull = invoice.due <= 0;
 
@@ -1573,25 +1933,7 @@ function InvoiceModal({ invoice, client, onClose }) {
             {paidFull ? "PAID" : "DUE"}
           </div>
 
-          <div className="flex items-start justify-between mb-4">
-            <div className="flex items-center gap-3">
-              <LogoMark size={48} />
-              <div>
-                <div className="font-display text-2xl leading-tight" style={{ color: INK }}>{COMPANY.name}</div>
-                <div className="text-xs font-medium" style={{ color: GOLD }}>{COMPANY.tagline}</div>
-              </div>
-            </div>
-            <div className="text-right text-xs text-slate-500">
-              <div className="font-mono text-sm font-semibold" style={{ color: INK }}>{invoice.invoiceNo}</div>
-              <div>Challan: {invoice.challanNo}</div>
-              <div>{fmtDate(invoice.date)}</div>
-            </div>
-          </div>
-
-          <div className="text-center text-[11px] text-slate-500 leading-relaxed mb-6 pb-3 border-b" style={{ borderColor: "#e7e0d3" }}>
-            <div>Head Office: {COMPANY.address}</div>
-            <div>Hotline: {COMPANY.hotline}, Tel: {COMPANY.tel}, E-mail: {COMPANY.email}, Web: {COMPANY.web}</div>
-          </div>
+          <DocHeader invoice={invoice} docLabel="Invoice" />
 
           <div className="grid grid-cols-2 gap-4 mb-6 text-sm">
             <div>
@@ -1633,9 +1975,10 @@ function InvoiceModal({ invoice, client, onClose }) {
             </div>
           </div>
 
-          <div className="mt-10 pt-4 border-t text-[11px] text-slate-400 flex justify-between" style={{ borderColor: "#eee6d3" }}>
-            <span>Goods once sold as per this challan are recorded against the client ledger.</span>
-            <span>Authorized Signature ______________</span>
+          <SignatureBlock branding={branding} />
+
+          <div className="mt-4 pt-3 border-t text-[10px] text-slate-400" style={{ borderColor: "#eee6d3" }}>
+            This is a computer-generated invoice. Corresponding delivery details are on Challan {invoice.challanNo}.
           </div>
         </div>
       </div>
@@ -1647,6 +1990,146 @@ function InvoiceModal({ invoice, client, onClose }) {
           .no-print { display: none !important; }
         }
       `}</style>
+    </div>
+  );
+}
+
+function ChallanModal({ invoice, client, branding, onClose }) {
+  if (!invoice) return null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-start md:items-center justify-center p-3 md:p-6 overflow-y-auto" style={{ background: "rgba(20,28,46,0.55)" }}>
+      <div className="no-print flex justify-end gap-2 w-full max-w-2xl mb-2">
+        <GhostButton onClick={() => window.print()} className="bg-white"><Printer size={15} /> Print</GhostButton>
+        <GhostButton onClick={onClose} className="bg-white"><X size={15} /> Close</GhostButton>
+      </div>
+      <div id="challan-print-area" className="bg-white w-full max-w-2xl rounded-md shadow-xl relative overflow-hidden" style={{ fontFamily: "Inter, sans-serif" }}>
+        <div className="h-2" style={{ background: `linear-gradient(90deg, ${INK}, ${GOLD})` }} />
+        <div className="p-8 relative">
+          <DocHeader invoice={invoice} docLabel="Delivery Challan" />
+
+          <div className="grid grid-cols-2 gap-4 mb-6 text-sm">
+            <div>
+              <div className="text-[11px] uppercase tracking-wide text-slate-400 mb-1">Delivered To</div>
+              <div className="font-medium">{invoice.clientName}</div>
+              {client?.phone && <div className="text-slate-500 text-xs">{client.phone}</div>}
+            </div>
+            <div>
+              <div className="text-[11px] uppercase tracking-wide text-slate-400 mb-1">Delivery Address</div>
+              <div className="text-sm text-slate-700">{client?.address || "—"}</div>
+              <div className="text-slate-500 text-xs mt-1">Delivery date: {fmtDate(invoice.date)}</div>
+            </div>
+          </div>
+
+          <table className="w-full text-sm mb-4">
+            <thead>
+              <tr className="text-left text-xs uppercase tracking-wide text-slate-500 border-b-2" style={{ borderColor: INK }}>
+                <th className="py-2">Item</th>
+                <th className="py-2 text-right">Quantity</th>
+                <th className="py-2 text-right">Unit</th>
+              </tr>
+            </thead>
+            <tbody>
+              {invoice.items.map((it, idx) => (
+                <tr key={idx} className="border-b" style={{ borderColor: "#eee6d3" }}>
+                  <td className="py-2">{it.name}</td>
+                  <td className="py-2 text-right">{it.qty}</td>
+                  <td className="py-2 text-right">{it.unit}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+
+          <SignatureBlock branding={branding} />
+
+          <div className="mt-4 pt-3 border-t text-[10px] text-slate-400" style={{ borderColor: "#eee6d3" }}>
+            This challan confirms delivery of goods only. Pricing and payment details are on Invoice {invoice.invoiceNo}.
+          </div>
+        </div>
+      </div>
+      <style>{`
+        @media print {
+          body * { visibility: hidden; }
+          #challan-print-area, #challan-print-area * { visibility: visible; }
+          #challan-print-area { position: fixed; inset: 0; margin: auto; box-shadow: none; }
+          .no-print { display: none !important; }
+        }
+      `}</style>
+    </div>
+  );
+}
+
+/* ---------------------------------- Settings (branding: signature & seal) ---------------------------------- */
+
+function fileToDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+function SettingsView({ branding, notify, notifyErr }) {
+  const [signaturePreview, setSignaturePreview] = useState(branding?.signatureUrl || null);
+  const [sealPreview, setSealPreview] = useState(branding?.sealUrl || null);
+  const [saving, setSaving] = useState(false);
+
+  const handleFile = async (file, setter) => {
+    if (!file) return;
+    if (file.size > 400 * 1024) { notify("Please use a smaller image (under 400KB) — a plain PNG works best.", "err"); return; }
+    const dataUrl = await fileToDataUrl(file);
+    setter(dataUrl);
+  };
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await setDoc(brandingRef, { signatureUrl: signaturePreview || "", sealUrl: sealPreview || "" }, { merge: true });
+      notify("Signature & seal saved — they'll now appear on every invoice and challan");
+    } catch (e) { notifyErr(e); } finally { setSaving(false); }
+  };
+
+  return (
+    <div className="space-y-5 max-w-xl">
+      <div>
+        <h1 className="font-display text-2xl" style={{ color: INK }}>Settings</h1>
+        <p className="text-sm text-slate-500 mt-0.5">Upload a digital signature and company seal — they'll appear by default on every invoice and challan.</p>
+      </div>
+
+      <Card className="p-5 space-y-5">
+        <div>
+          <div className="text-xs font-medium text-slate-600 mb-2">Digital Signature</div>
+          <div className="flex items-center gap-4">
+            <div className="w-32 h-16 border rounded-md flex items-center justify-center bg-stone-50" style={{ borderColor: "#e7e0d3" }}>
+              {signaturePreview ? <img src={signaturePreview} alt="" className="max-h-full max-w-full object-contain" /> : <span className="text-xs text-slate-300">No image</span>}
+            </div>
+            <label className="inline-flex items-center gap-2 px-3 py-2 rounded-md border text-sm cursor-pointer" style={{ borderColor: "#d9d0bb", color: INK }}>
+              <Upload size={14} /> Upload
+              <input type="file" accept="image/*" className="hidden" onChange={(e) => handleFile(e.target.files[0], setSignaturePreview)} />
+            </label>
+            {signaturePreview && <button onClick={() => setSignaturePreview(null)} className="text-xs" style={{ color: ROSE }}>Remove</button>}
+          </div>
+        </div>
+
+        <div>
+          <div className="text-xs font-medium text-slate-600 mb-2">Company Seal / Stamp</div>
+          <div className="flex items-center gap-4">
+            <div className="w-32 h-16 border rounded-md flex items-center justify-center bg-stone-50" style={{ borderColor: "#e7e0d3" }}>
+              {sealPreview ? <img src={sealPreview} alt="" className="max-h-full max-w-full object-contain" /> : <span className="text-xs text-slate-300">No image</span>}
+            </div>
+            <label className="inline-flex items-center gap-2 px-3 py-2 rounded-md border text-sm cursor-pointer" style={{ borderColor: "#d9d0bb", color: INK }}>
+              <Upload size={14} /> Upload
+              <input type="file" accept="image/*" className="hidden" onChange={(e) => handleFile(e.target.files[0], setSealPreview)} />
+            </label>
+            {sealPreview && <button onClick={() => setSealPreview(null)} className="text-xs" style={{ color: ROSE }}>Remove</button>}
+          </div>
+        </div>
+
+        <div className="text-[11px] text-slate-400">Tip: a signature or seal saved as a PNG with a transparent background looks best. Keep each file under 400KB.</div>
+
+        <PrimaryButton onClick={save} disabled={saving}>{saving ? "Saving…" : "Save"}</PrimaryButton>
+      </Card>
     </div>
   );
 }
