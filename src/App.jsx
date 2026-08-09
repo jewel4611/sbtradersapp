@@ -123,10 +123,12 @@ export default function Root() {
     if (!authUser) { setProfile(null); return; }
     const unsub = onSnapshot(doc(db, "users", authUser.uid), (snap) => {
       if (!snap.exists() || snap.data().active === false) {
-        // Profile removed or deactivated — revoke access immediately.
+        // Profile removed or blocked — revoke access immediately, showing
+        // whatever custom message the admin set when blocking this person.
+        const blockMsg = snap.exists() ? snap.data().blockMessage : null;
         signOut(auth);
         setProfile(null);
-        setLoginError("This account is no longer active. Contact your admin.");
+        setLoginError(blockMsg || "This account is no longer active. Contact your admin.");
         return;
       }
       setProfile({ id: snap.id, ...snap.data() });
@@ -180,7 +182,7 @@ export default function Root() {
             const sDb = getSecondaryDb();
             // Written using the SECONDARY session (signed in as the brand
             // new user) while first-run setup is still open.
-            await setDoc(doc(sDb, "users", uid), { name: person.name, username: person.username, role: person.role, active: true, tabs: [] });
+            await setDoc(doc(sDb, "users", uid), { name: person.name, username: person.username, role: person.role, active: true, tabs: [], canManageAccounts: !!person.canManageAccounts });
             await setDoc(doc(sDb, "directory", uid), { name: person.name, username: person.username, role: person.role, active: true });
             if (i === people.length - 1) {
               // Only flip the bootstrap flag once BOTH accounts are fully
@@ -254,8 +256,8 @@ function SetupWizard({ onCreate }) {
     setSaving(true);
     try {
       await onCreate(
-        { name: personA.name.trim(), username: slugUser(personA.name), pin: personA.pin, role: "admin" },
-        { name: personB.name.trim(), username: slugUser(personB.name), pin: personB.pin, role: "admin" }
+        { name: personA.name.trim(), username: slugUser(personA.name), pin: personA.pin, role: "admin", canManageAccounts: true },
+        { name: personB.name.trim(), username: slugUser(personB.name), pin: personB.pin, role: "admin", canManageAccounts: false }
       );
     } catch (e2) {
       setErr(e2.message || "Could not create accounts.");
@@ -276,7 +278,7 @@ function SetupWizard({ onCreate }) {
           <div>
             <div className="flex items-center gap-2 mb-3">
               <Pill color={GOLD}>Admin</Pill>
-              <span className="text-xs text-slate-400">Full access — manages stock, sales, ledger and staff accounts</span>
+              <span className="text-xs text-slate-400">Full access, and the only one who can create/block staff & admin accounts</span>
             </div>
             <div className="grid grid-cols-3 gap-3">
               <Field label="Name"><input className={inputCls} style={inputStyle} value={personA.name} onChange={(e) => setPersonA({ ...personA, name: e.target.value })} required /></Field>
@@ -287,7 +289,7 @@ function SetupWizard({ onCreate }) {
           <div>
             <div className="flex items-center gap-2 mb-3">
               <Pill color={GOLD}>Admin</Pill>
-              <span className="text-xs text-slate-400">Full access — manages stock, sales, ledger and staff accounts</span>
+              <span className="text-xs text-slate-400">Full access to stock, sales and ledger — can't create or block accounts</span>
             </div>
             <div className="grid grid-cols-3 gap-3">
               <Field label="Name"><input className={inputCls} style={inputStyle} value={personB.name} onChange={(e) => setPersonB({ ...personB, name: e.target.value })} required /></Field>
@@ -395,6 +397,7 @@ function MainApp({ currentUser, logout, users, products, clients, invoices, paym
   const canSeeUsers = allowed.includes("users");
   const canSeeSettings = allowed.includes("settings");
   const canEditRecords = currentUser.role === "admin" || currentUser.role === "manager";
+  const canManageAccounts = currentUser.role === "admin" && currentUser.canManageAccounts === true;
   const openPrint = (id, kind) => setPrintDoc({ id, kind });
 
   return (
@@ -501,7 +504,7 @@ function MainApp({ currentUser, logout, users, products, clients, invoices, paym
               />
             )}
             {tab === "users" && canSeeUsers && (
-              <UsersView users={users} currentUser={currentUser} notify={notify} notifyErr={notifyErr} />
+              <UsersView users={users} currentUser={currentUser} canManageAccounts={canManageAccounts} notify={notify} notifyErr={notifyErr} />
             )}
             {tab === "settings" && canSeeSettings && (
               <SettingsView branding={branding} notify={notify} notifyErr={notifyErr} />
@@ -1627,9 +1630,10 @@ function PaymentModal({ client, onClose, onSave }) {
 
 /* ---------------------------------- Users / Staff accounts (admin only) ---------------------------------- */
 
-function UsersView({ users, currentUser, notify, notifyErr }) {
+function UsersView({ users, currentUser, canManageAccounts, notify, notifyErr }) {
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState(null);
+  const [blockTarget, setBlockTarget] = useState(null);
 
   const activeAdminCount = users.filter((u) => u.role === "admin" && u.active !== false).length;
   const isLastActiveAdmin = (u) => u.role === "admin" && u.active !== false && activeAdminCount <= 1;
@@ -1656,7 +1660,7 @@ function UsersView({ users, currentUser, notify, notifyErr }) {
         await resetSecondaryAuth();
         // 2) Write their profile + public directory entry as the admin.
         const tabs = data.role === "admin" ? [] : data.tabs;
-        await setDoc(doc(db, "users", uid), { name: data.name, username: data.username, role: data.role, active: true, tabs, shielded: false });
+        await setDoc(doc(db, "users", uid), { name: data.name, username: data.username, role: data.role, active: true, tabs, shielded: false, canManageAccounts: false });
         await setDoc(doc(db, "directory", uid), { name: data.name, username: data.username, role: data.role, active: true });
         notify(data.role === "admin" ? "Admin account created" : "Staff account created");
       }
@@ -1677,14 +1681,28 @@ function UsersView({ users, currentUser, notify, notifyErr }) {
     } catch (e) { notifyErr(e); }
   };
 
-  const toggleActive = async (u) => {
-    if (u.id === currentUser.id) { notify("You can't deactivate your own account", "err"); return; }
-    if (u.active !== false && isLastActiveAdmin(u)) { notify("Can't deactivate the last remaining Admin", "err"); return; }
+  const blockUser = async (u, message) => {
     try {
-      await updateDoc(doc(db, "users", u.id), { active: !u.active });
-      await updateDoc(doc(db, "directory", u.id), { active: !u.active });
-      notify(u.active !== false ? "Account deactivated" : "Account activated");
+      await updateDoc(doc(db, "users", u.id), { active: false, blockMessage: message });
+      await updateDoc(doc(db, "directory", u.id), { active: false });
+      notify(`${u.name} has been blocked`);
+      setBlockTarget(null);
     } catch (e) { notifyErr(e); }
+  };
+
+  const unblockUser = async (u) => {
+    try {
+      await updateDoc(doc(db, "users", u.id), { active: true, blockMessage: "" });
+      await updateDoc(doc(db, "directory", u.id), { active: true });
+      notify(`${u.name} has been unblocked`);
+    } catch (e) { notifyErr(e); }
+  };
+
+  const handlePower = (u) => {
+    if (u.id === currentUser.id) { notify("You can't block your own account", "err"); return; }
+    if (u.active !== false && isLastActiveAdmin(u)) { notify("Can't block the last remaining Admin", "err"); return; }
+    if (u.active === false) unblockUser(u);
+    else setBlockTarget(u);
   };
 
   const removeAccount = async (u) => {
@@ -1703,9 +1721,11 @@ function UsersView({ users, currentUser, notify, notifyErr }) {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="font-display text-2xl" style={{ color: INK }}>Staff Accounts</h1>
-          <p className="text-sm text-slate-500 mt-0.5">Add another Admin, or a limited Staff account for a specific job.</p>
+          <p className="text-sm text-slate-500 mt-0.5">
+            {canManageAccounts ? "Add another Admin, or a limited Staff account for a specific job." : "You can view accounts here — only Jewel can add, block, or remove them."}
+          </p>
         </div>
-        <PrimaryButton onClick={() => { setEditing(null); setShowForm(true); }}><UserPlus size={16} /> Add Account</PrimaryButton>
+        {canManageAccounts && <PrimaryButton onClick={() => { setEditing(null); setShowForm(true); }}><UserPlus size={16} /> Add Account</PrimaryButton>}
       </div>
 
       <Card className="overflow-x-auto">
@@ -1725,23 +1745,27 @@ function UsersView({ users, currentUser, notify, notifyErr }) {
                 <td className="px-4 py-3 font-medium">{u.name}{u.id === currentUser.id && <span className="text-slate-400 font-normal text-xs"> (you)</span>}</td>
                 <td className="px-4 py-3"><Pill color={roleColor(u.role)}>{roleLabel(u.role)}</Pill></td>
                 <td className="px-4 py-3 text-xs text-slate-500">
-                  {u.role === "admin" ? "Everything" : u.role === "manager" ? "Everything except staff accounts" : (u.tabs || []).map((t) => ALL_TABS.find((n) => n.id === t)?.label).filter(Boolean).join(", ") || "None"}
+                  {u.role === "admin" ? (u.canManageAccounts ? "Everything, incl. managing accounts" : "Everything except managing accounts") : u.role === "manager" ? "Everything except staff accounts" : (u.tabs || []).map((t) => ALL_TABS.find((n) => n.id === t)?.label).filter(Boolean).join(", ") || "None"}
                 </td>
                 <td className="px-4 py-3">
-                  {u.active !== false ? <Pill color={EMERALD}>Active</Pill> : <Pill color={ROSE}>Inactive</Pill>}
+                  {u.active !== false ? <Pill color={EMERALD}>Active</Pill> : <Pill color={ROSE}>Blocked</Pill>}
                   {u.shielded && <span className="ml-1"><Pill color={INK}>Hidden</Pill></span>}
                 </td>
                 <td className="px-4 py-3 text-right whitespace-nowrap">
-                  {u.id === currentUser.id ? (
+                  {u.id === currentUser.id && (
                     <button onClick={() => toggleShielded(u)} className="text-xs font-medium px-2 py-1 rounded" style={{ color: u.shielded ? EMERALD : TEAL }}>
                       {u.shielded ? "Unhide me" : "Hide me from other admins"}
                     </button>
-                  ) : (
+                  )}
+                  {u.id !== currentUser.id && canManageAccounts && (
                     <>
                       <button onClick={() => { setEditing(u); setShowForm(true); }} className="text-xs font-medium px-2 py-1 rounded" style={{ color: GOLD }}><Pencil size={12} className="inline" /></button>
-                      <button onClick={() => toggleActive(u)} className="text-xs font-medium px-2 py-1 rounded ml-1" style={{ color: TEAL }}><Power size={12} className="inline" /></button>
+                      <button onClick={() => handlePower(u)} className="text-xs font-medium px-2 py-1 rounded ml-1" style={{ color: TEAL }}><Power size={12} className="inline" /></button>
                       <button onClick={() => removeAccount(u)} className="text-xs font-medium px-2 py-1 rounded ml-1" style={{ color: ROSE }}><Trash2 size={12} className="inline" /></button>
                     </>
+                  )}
+                  {u.id !== currentUser.id && !canManageAccounts && (
+                    <span className="text-xs text-slate-300">view only</span>
                   )}
                 </td>
               </tr>
@@ -1751,7 +1775,28 @@ function UsersView({ users, currentUser, notify, notifyErr }) {
       </Card>
 
       {showForm && <StaffFormModal initial={editing} onClose={() => { setShowForm(false); setEditing(null); }} onSave={saveAccount} />}
+      {blockTarget && <BlockUserModal user={blockTarget} onClose={() => setBlockTarget(null)} onBlock={(msg) => blockUser(blockTarget, msg)} />}
     </div>
+  );
+}
+
+const DEFAULT_BLOCK_MESSAGE = "Your access has been paused. Please contact the admin to renew your subscription and continue using this app.";
+
+function BlockUserModal({ user, onClose, onBlock }) {
+  const [message, setMessage] = useState(DEFAULT_BLOCK_MESSAGE);
+  return (
+    <Modal onClose={onClose} title={`Block ${user.name}`}>
+      <div className="space-y-4">
+        <p className="text-sm text-slate-500">They'll be signed out immediately, and will see this exact message the next time they try to log in.</p>
+        <Field label="Message shown to this person">
+          <textarea rows={4} className={inputCls} style={inputStyle} value={message} onChange={(e) => setMessage(e.target.value)} />
+        </Field>
+        <div className="flex justify-end gap-2 pt-2">
+          <GhostButton onClick={onClose}>Cancel</GhostButton>
+          <button onClick={() => onBlock(message.trim() || DEFAULT_BLOCK_MESSAGE)} className="inline-flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium text-white" style={{ background: ROSE }}>Block Account</button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 

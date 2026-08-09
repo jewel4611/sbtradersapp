@@ -14,6 +14,12 @@ service cloud.firestore {
     function isAdmin() { return isActiveUser() && role() == 'admin'; }
     function isManager() { return isActiveUser() && role() == 'manager'; }
     function isAdminOrManager() { return isAdmin() || isManager(); }
+    // Only an Admin explicitly flagged canManageAccounts (Jewel) can
+    // create, block/unblock, or remove other accounts. Every other Admin
+    // (e.g. Bahar) keeps full operational access but not this. Uses
+    // .get() with a default so accounts created before this field existed
+    // don't error out — they're just treated as false (safe default).
+    function canManageAccounts() { return isAdmin() && me().get('canManageAccounts', false) == true; }
 
     // True if the signed-in user is allowed into the given section
     // ('dashboard' | 'stock' | 'sale' | 'invoices' | 'clients').
@@ -43,21 +49,25 @@ service cloud.firestore {
     // before anyone is authenticated. No PINs or permissions live here.
     match /directory/{uid} {
       allow read: if true;
-      allow write: if isAdmin() || (!setupDone() && isSignedIn() && request.auth.uid == uid);
+      allow write: if canManageAccounts() || (!setupDone() && isSignedIn() && request.auth.uid == uid);
     }
 
-    // Full staff profile: role, tabs, active flag, shielded flag. Never
-    // contains a PIN — Firebase Auth verifies the PIN, not this doc.
+    // Full staff profile: role, tabs, active flag, shielded flag,
+    // canManageAccounts flag. Never contains a PIN — Firebase Auth
+    // verifies the PIN, not this doc.
     match /users/{uid} {
+      // Any active admin can READ the list (so Bahar can still view Staff
+      // Accounts) as long as the target isn't shielded — but only the
+      // account-manager can WRITE it.
       allow read: if isSignedIn() && (request.auth.uid == uid || (isAdmin() && !targetIsShielded(uid)));
-      allow create: if isAdmin() || (!setupDone() && isSignedIn() && request.auth.uid == uid);
-      // An admin can edit/remove anyone EXCEPT a shielded account. Anyone
-      // can always toggle the 'shielded' flag on their own doc, and only
-      // that flag — this is how self-shielding is enforced server-side,
-      // not just hidden in the UI.
-      allow update: if (isAdmin() && !targetIsShielded(uid))
+      allow create: if canManageAccounts() || (!setupDone() && isSignedIn() && request.auth.uid == uid);
+      // The account-manager can edit/block/remove anyone EXCEPT a shielded
+      // account. Anyone can always toggle the 'shielded' flag on their own
+      // doc, and only that flag — this is how self-shielding is enforced
+      // server-side, not just hidden in the UI.
+      allow update: if (canManageAccounts() && !targetIsShielded(uid))
         || (request.auth.uid == uid && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['shielded']));
-      allow delete: if isAdmin() && !targetIsShielded(uid);
+      allow delete: if canManageAccounts() && !targetIsShielded(uid);
     }
 
     match /meta/setupComplete {

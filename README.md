@@ -90,11 +90,48 @@ name.
 ## What's stored where
 
 - **Firestore collections**: `products`, `clients`, `invoices`,
-  `payments`, `users` (full staff profiles, admin-only to browse), and
+  `payments`, `users` (full staff profiles, admin-only to browse),
   `directory` (public, name + role + active flag only — powers the login
-  picker before anyone signs in). Plus `meta/counters` for invoice
-  numbering and `meta/setupComplete` marking first-run setup as done.
+  picker before anyone signs in), and `settings` (the shared digital
+  signature + seal images). Plus `meta/counters` for invoice numbering
+  and `meta/setupComplete` marking first-run setup as done.
 - All data syncs in real time across every device your staff use.
 - Selling stock runs as a single Firestore **transaction**, so two people
   selling the last units of the same item at the same moment can't both
   succeed — the second is told there isn't enough stock left.
+
+## Invoices vs Challans
+
+Every sale generates one record, but it prints as two separate documents:
+
+- **Invoice** — full pricing, subtotal, discount, paid, due.
+- **Challan** — product names, quantities, delivery address and date only.
+  No prices anywhere on it.
+
+Both carry a "Receiver's Signature" line and an "Authorized Signature"
+area. Upload a signature and/or seal image once from **Settings**
+(Admin or Manager only) and both documents pick it up automatically from
+then on — no need to re-upload per invoice.
+
+## Editing invoices and clients
+
+Admin and Manager can edit any invoice from the Invoices list or from a
+client's ledger. Changing item quantities, prices, or the client
+re-runs stock as a single transaction: it puts the *original* quantities
+back into stock, then takes out the *new* quantities, so stock is never
+double-counted. If an invoice has an item from before this feature
+existed (no linked product), that one line is flagged and won't
+auto-adjust stock — everything else on the same invoice still will.
+
+Client name, phone, address, and **opening balance** (what a client
+already owed — or a credit they already had — before you started using
+this app) are all editable from the client's ledger page.
+
+## Payments
+
+Recording a payment now captures a method (Cash, bKash, Nagad, Rocket,
+Bank Transfer, Cheque, Other) and an optional reference/transaction ID
+alongside the amount. A client's ledger page shows **Total Invoiced**,
+**Total Paid**, and **Current Due** as three summary cards, so tracking
+someone who pays in two or three installments no longer means adding up
+individual invoices by hand.
