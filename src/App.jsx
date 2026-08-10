@@ -68,7 +68,6 @@ const roleColor = (r) => (r === "admin" ? GOLD : r === "manager" ? TEAL : EMERAL
 
 const col = {
   users: collection(db, "users"),
-  directory: collection(db, "directory"),
   products: collection(db, "products"),
   clients: collection(db, "clients"),
   invoices: collection(db, "invoices"),
@@ -91,7 +90,7 @@ async function registerAuthAccount(username, pin) {
 /* ---------------------------------- Root (auth + realtime data) ---------------------------------- */
 
 export default function Root() {
-  const [directory, setDirectory] = useState(null); // null = still loading
+  const [setupComplete, setSetupComplete] = useState(null); // null = still loading
   const [authUser, setAuthUser] = useState(undefined); // undefined = unknown yet, null = signed out
   const [profile, setProfile] = useState(null);
   const [authError, setAuthError] = useState(null);
@@ -105,10 +104,12 @@ export default function Root() {
   const [counters, setCounters] = useState({ inv: 0 });
   const [branding, setBranding] = useState({});
 
-  // Public directory — always readable, drives the login screen list and
-  // tells us whether first-run setup has happened yet.
+  // The ONLY thing readable before anyone signs in: a bare true/false flag
+  // for whether first-run setup has happened. No names, no account list —
+  // login now works by typing a username, not picking from a shown list,
+  // so an account can be genuinely invisible pre-login (see "shielded").
   useEffect(() => {
-    const unsub = onSnapshot(col.directory, (s) => setDirectory(withId(s)), (e) => setAuthError(e.message));
+    const unsub = onSnapshot(setupRef, (s) => setSetupComplete(s.exists() && s.data().done === true), (e) => setAuthError(e.message));
     return unsub;
   }, []);
 
@@ -163,7 +164,7 @@ export default function Root() {
     );
   }
 
-  if (directory === null || authUser === undefined) {
+  if (setupComplete === null || authUser === undefined) {
     return (
       <div style={{ background: PAPER }} className="min-h-screen flex items-center justify-center">
         <div className="text-slate-500 text-sm tracking-wide">Loading SB Traders…</div>
@@ -171,7 +172,7 @@ export default function Root() {
     );
   }
 
-  if (directory.length === 0) {
+  if (!setupComplete) {
     return (
       <div style={{ background: PAPER }} className="min-h-screen flex items-center justify-center p-4">
         <SetupWizard onCreate={async (admin, manager) => {
@@ -183,7 +184,6 @@ export default function Root() {
             // Written using the SECONDARY session (signed in as the brand
             // new user) while first-run setup is still open.
             await setDoc(doc(sDb, "users", uid), { name: person.name, username: person.username, role: person.role, active: true, tabs: [], canManageAccounts: !!person.canManageAccounts });
-            await setDoc(doc(sDb, "directory", uid), { name: person.name, username: person.username, role: person.role, active: true });
             if (i === people.length - 1) {
               // Only flip the bootstrap flag once BOTH accounts are fully
               // written — and while still authenticated as this last new
@@ -201,14 +201,13 @@ export default function Root() {
     return (
       <div style={{ background: PAPER }} className="min-h-screen flex items-center justify-center p-4">
         <LoginScreen
-          people={directory.filter((u) => u.active !== false)}
           error={loginError}
           onLogin={async (username, pin) => {
             setLoginError(null);
             try {
               await signInWithEmailAndPassword(auth, emailFor(username), pin);
             } catch (e) {
-              setLoginError("Incorrect PIN. Try again.");
+              setLoginError("Incorrect name or PIN.");
             }
           }}
         />
@@ -306,18 +305,17 @@ function SetupWizard({ onCreate }) {
   );
 }
 
-function LoginScreen({ people, error, onLogin }) {
-  const [selected, setSelected] = useState(null);
+function LoginScreen({ error, onLogin }) {
+  const [name, setName] = useState("");
   const [pin, setPin] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
   const submit = async (e) => {
     e.preventDefault();
-    if (submitting) return;
+    if (submitting || !name.trim() || pin.length !== 6) return;
     setSubmitting(true);
-    await onLogin(selected.username, pin);
+    await onLogin(slugUser(name), pin);
     setSubmitting(false);
-    setPin("");
   };
 
   return (
@@ -329,36 +327,18 @@ function LoginScreen({ people, error, onLogin }) {
         <p className="text-sm text-slate-500 mt-2">Staff Login</p>
       </div>
 
-      {!selected ? (
-        <Card className="p-4">
-          <div className="space-y-2">
-            {people.length === 0 && <div className="text-sm text-slate-400 text-center py-4">No active accounts.</div>}
-            {people.map((u) => (
-              <button key={u.id} onClick={() => setSelected(u)} className="w-full flex items-center justify-between px-4 py-3 rounded-md border hover:bg-stone-50 transition" style={{ borderColor: "#e7e0d3" }}>
-                <span className="text-sm font-medium">{u.name}</span>
-                <Pill color={roleColor(u.role)}>{roleLabel(u.role)}</Pill>
-              </button>
-            ))}
-          </div>
-        </Card>
-      ) : (
-        <Card className="p-6">
-          <form onSubmit={submit} className="space-y-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <div className="text-sm font-semibold">{selected.name}</div>
-                <Pill color={roleColor(selected.role)}>{roleLabel(selected.role)}</Pill>
-              </div>
-              <button type="button" onClick={() => { setSelected(null); setPin(""); }} className="text-xs text-slate-400 flex items-center gap-1"><ChevronLeft size={13} /> Change user</button>
-            </div>
-            <Field label="Enter PIN">
-              <input autoFocus type="password" inputMode="numeric" maxLength={6} value={pin} onChange={(e) => setPin(e.target.value.replace(/\D/g, ""))} className={inputCls + " text-center tracking-[0.5em] text-lg"} style={inputStyle} />
-            </Field>
-            {error && <div className="text-xs text-center" style={{ color: ROSE }}>{error}</div>}
-            <PrimaryButton type="submit" disabled={submitting || pin.length !== 6} className="w-full justify-center"><Lock size={15} /> {submitting ? "Checking…" : "Login"}</PrimaryButton>
-          </form>
-        </Card>
-      )}
+      <Card className="p-6">
+        <form onSubmit={submit} className="space-y-4">
+          <Field label="Your name">
+            <input autoFocus className={inputCls} style={inputStyle} value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Jewel" required />
+          </Field>
+          <Field label="PIN">
+            <input type="password" inputMode="numeric" maxLength={6} value={pin} onChange={(e) => setPin(e.target.value.replace(/\D/g, ""))} className={inputCls + " text-center tracking-[0.5em] text-lg"} style={inputStyle} />
+          </Field>
+          {error && <div className="text-xs text-center" style={{ color: ROSE }}>{error}</div>}
+          <PrimaryButton type="submit" disabled={submitting || !name.trim() || pin.length !== 6} className="w-full justify-center"><Lock size={15} /> {submitting ? "Checking…" : "Login"}</PrimaryButton>
+        </form>
+      </Card>
     </div>
   );
 }
@@ -1650,7 +1630,6 @@ function UsersView({ users, currentUser, canManageAccounts, notify, notifyErr })
         // Editing never touches login credentials — just name/permissions.
         const patch = editing.role === "admin" ? { name: data.name } : { name: data.name, tabs: data.tabs };
         await updateDoc(doc(db, "users", editing.id), patch);
-        await updateDoc(doc(db, "directory", editing.id), { name: data.name });
         notify("Account updated");
       } else {
         // 1) Register a real Firebase Auth login for this person (their
@@ -1658,10 +1637,9 @@ function UsersView({ users, currentUser, canManageAccounts, notify, notifyErr })
         //    own signed-in session.
         const uid = await registerAuthAccount(data.username, data.pin);
         await resetSecondaryAuth();
-        // 2) Write their profile + public directory entry as the admin.
+        // 2) Write their profile as the admin.
         const tabs = data.role === "admin" ? [] : data.tabs;
         await setDoc(doc(db, "users", uid), { name: data.name, username: data.username, role: data.role, active: true, tabs, shielded: false, canManageAccounts: false });
-        await setDoc(doc(db, "directory", uid), { name: data.name, username: data.username, role: data.role, active: true });
         notify(data.role === "admin" ? "Admin account created" : "Staff account created");
       }
       setShowForm(false); setEditing(null);
@@ -1684,7 +1662,6 @@ function UsersView({ users, currentUser, canManageAccounts, notify, notifyErr })
   const blockUser = async (u, message) => {
     try {
       await updateDoc(doc(db, "users", u.id), { active: false, blockMessage: message });
-      await updateDoc(doc(db, "directory", u.id), { active: false });
       notify(`${u.name} has been blocked`);
       setBlockTarget(null);
     } catch (e) { notifyErr(e); }
@@ -1693,7 +1670,6 @@ function UsersView({ users, currentUser, canManageAccounts, notify, notifyErr })
   const unblockUser = async (u) => {
     try {
       await updateDoc(doc(db, "users", u.id), { active: true, blockMessage: "" });
-      await updateDoc(doc(db, "directory", u.id), { active: true });
       notify(`${u.name} has been unblocked`);
     } catch (e) { notifyErr(e); }
   };
@@ -1711,7 +1687,6 @@ function UsersView({ users, currentUser, canManageAccounts, notify, notifyErr })
     if (!confirm(`Remove "${u.name}"'s account? They will immediately lose access.`)) return;
     try {
       await deleteDoc(doc(db, "users", u.id));
-      await deleteDoc(doc(db, "directory", u.id));
       notify("Account removed");
     } catch (e) { notifyErr(e); }
   };

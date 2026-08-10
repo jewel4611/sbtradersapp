@@ -45,12 +45,14 @@ service cloud.firestore {
         && get(/databases/$(database)/documents/users/$(uid)).data.get('shielded', false) == true;
     }
 
-    // Public, non-sensitive name list so the login screen can be shown
-    // before anyone is authenticated. No PINs or permissions live here.
-    match /directory/{uid} {
-      allow read: if true;
-      allow write: if canManageAccounts() || (!setupDone() && isSignedIn() && request.auth.uid == uid);
-    }
+    // NOTE: there is deliberately no public "directory" collection anymore.
+    // Before this change, a name+role list had to be publicly readable so
+    // the login screen could show a tappable list before anyone signed in.
+    // Login now works by typing a username instead, so nothing about any
+    // account needs to be visible pre-authentication — including whether
+    // it exists at all. Any leftover /directory/* documents from an older
+    // version of this app are automatically inaccessible below, since
+    // paths with no matching rule are denied by default.
 
     // Full staff profile: role, tabs, active flag, shielded flag,
     // canManageAccounts flag. Never contains a PIN — Firebase Auth
