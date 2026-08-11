@@ -77,12 +77,28 @@ service cloud.firestore {
       allow create, update: if isSignedIn() && !setupDone();
     }
 
-    // Digital signature & seal images used on every invoice/challan.
-    // Any active account can read them (needed to view/print documents);
-    // only Admin or Manager can change them.
-    match /settings/{id} {
+    // Digital signature & seal — any active account can read them (needed
+    // to view/print documents); only Admin or Moderator can change them.
+    match /settings/branding {
       allow read: if isActiveUser();
       allow write: if isAdminOrManager();
+    }
+
+    // Dashboard advertisement — Jewel-only to edit. NOT covered by a
+    // generic /settings/{id} wildcard on purpose: Firestore merges access
+    // across every matching block, so a broad wildcard here would have
+    // accidentally let Moderator edit this too. Keeping every settings
+    // doc as its own explicit match avoids that trap.
+    match /settings/ad {
+      allow read: if isActiveUser();
+      allow write: if canManageAccounts();
+    }
+
+    // Login page notice — must be publicly readable, since it's shown
+    // before anyone signs in. Still Jewel-only to write.
+    match /settings/loginNotice {
+      allow read: if true;
+      allow write: if canManageAccounts();
     }
 
     match /products/{id} {

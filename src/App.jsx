@@ -61,7 +61,7 @@ function tabsForUser(user) {
   if (user.role === "manager") return [...ALL_TABS.map((t) => t.id), "settings"];
   return user.tabs && user.tabs.length ? user.tabs : ["dashboard"];
 }
-const roleLabel = (r) => (r === "admin" ? "Admin" : r === "manager" ? "Manager" : "Staff");
+const roleLabel = (r) => (r === "admin" ? "Admin" : r === "manager" ? "Moderator" : "Staff");
 const roleColor = (r) => (r === "admin" ? GOLD : r === "manager" ? TEAL : EMERALD);
 
 /* ---------------------------------- Firestore collections ---------------------------------- */
@@ -76,6 +76,8 @@ const col = {
 const counterRef = doc(db, "meta", "counters");
 const setupRef = doc(db, "meta", "setupComplete");
 const brandingRef = doc(db, "settings", "branding");
+const adRef = doc(db, "settings", "ad");
+const loginNoticeRef = doc(db, "settings", "loginNotice");
 const withId = (snap) => snap.docs.map((d) => ({ id: d.id, ...d.data() }));
 
 // Creates a real Firebase Auth login (email+password, where the "password"
@@ -103,13 +105,20 @@ export default function Root() {
   const [allUsers, setAllUsers] = useState([]);
   const [counters, setCounters] = useState({ inv: 0 });
   const [branding, setBranding] = useState({});
+  const [ad, setAd] = useState({});
+  const [loginNotice, setLoginNotice] = useState({});
 
-  // The ONLY thing readable before anyone signs in: a bare true/false flag
-  // for whether first-run setup has happened. No names, no account list —
-  // login now works by typing a username, not picking from a shown list,
-  // so an account can be genuinely invisible pre-login (see "shielded").
+  // The ONLY things readable before anyone signs in: a bare true/false flag
+  // for whether first-run setup has happened, and the optional login-page
+  // notice (which is meant to be seen pre-login, by design). No names, no
+  // account list — login now works by typing a username, not picking from
+  // a shown list, so an account can be genuinely invisible pre-login.
   useEffect(() => {
     const unsub = onSnapshot(setupRef, (s) => setSetupComplete(s.exists() && s.data().done === true), (e) => setAuthError(e.message));
+    return unsub;
+  }, []);
+  useEffect(() => {
+    const unsub = onSnapshot(loginNoticeRef, (s) => setLoginNotice(s.exists() ? s.data() : {}), () => {});
     return unsub;
   }, []);
 
@@ -147,6 +156,7 @@ export default function Root() {
       onSnapshot(col.payments, (s) => setPayments(withId(s)), () => {}),
       onSnapshot(counterRef, (s) => setCounters(s.exists() ? s.data() : { inv: 0 }), () => {}),
       onSnapshot(brandingRef, (s) => setBranding(s.exists() ? s.data() : {}), () => {}),
+      onSnapshot(adRef, (s) => setAd(s.exists() ? s.data() : {}), () => {}),
     ];
     if (profile.role === "admin") {
       unsubs.push(onSnapshot(col.users, (s) => setAllUsers(withId(s)), () => {}));
@@ -175,23 +185,14 @@ export default function Root() {
   if (!setupComplete) {
     return (
       <div style={{ background: PAPER }} className="min-h-screen flex items-center justify-center p-4">
-        <SetupWizard onCreate={async (admin, manager) => {
-          const people = [admin, manager];
-          for (let i = 0; i < people.length; i++) {
-            const person = people[i];
-            const uid = await registerAuthAccount(person.username, person.pin);
-            const sDb = getSecondaryDb();
-            // Written using the SECONDARY session (signed in as the brand
-            // new user) while first-run setup is still open.
-            await setDoc(doc(sDb, "users", uid), { name: person.name, username: person.username, role: person.role, active: true, tabs: [], canManageAccounts: !!person.canManageAccounts });
-            if (i === people.length - 1) {
-              // Only flip the bootstrap flag once BOTH accounts are fully
-              // written — and while still authenticated as this last new
-              // account, since the flag write also requires isSignedIn().
-              await setDoc(doc(sDb, "meta", "setupComplete"), { done: true });
-            }
-            await resetSecondaryAuth();
-          }
+        <SetupWizard onCreate={async (admin) => {
+          const uid = await registerAuthAccount(admin.username, admin.pin);
+          const sDb = getSecondaryDb();
+          // Written using the SECONDARY session (signed in as the brand
+          // new user) while first-run setup is still open.
+          await setDoc(doc(sDb, "users", uid), { name: admin.name, username: admin.username, role: "admin", active: true, tabs: [], canManageAccounts: true });
+          await setDoc(doc(sDb, "meta", "setupComplete"), { done: true });
+          await resetSecondaryAuth();
         }} />
       </div>
     );
@@ -202,6 +203,7 @@ export default function Root() {
       <div style={{ background: PAPER }} className="min-h-screen flex items-center justify-center p-4">
         <LoginScreen
           error={loginError}
+          notice={loginNotice}
           onLogin={async (username, pin) => {
             setLoginError(null);
             try {
@@ -221,7 +223,7 @@ export default function Root() {
       logout={() => signOut(auth)}
       users={allUsers} products={products} clients={clients}
       invoices={invoices} payments={payments} counters={counters}
-      branding={branding}
+      branding={branding} ad={ad}
     />
   );
 }
@@ -241,63 +243,42 @@ function LogoMark({ size = 56, ring = true }) {
 }
 
 function SetupWizard({ onCreate }) {
-  const [personA, setPersonA] = useState({ name: "Jewel", pin: "", pin2: "" });
-  const [personB, setPersonB] = useState({ name: "Bahar", pin: "", pin2: "" });
+  const [admin, setAdmin] = useState({ name: "Jewel", pin: "", pin2: "" });
   const [err, setErr] = useState("");
   const [saving, setSaving] = useState(false);
 
   const submit = async (e) => {
     e.preventDefault();
     if (saving) return;
-    if (personA.pin.length !== 6 || personB.pin.length !== 6) { setErr("PINs must be exactly 6 digits (Firebase requires 6+ character passwords)."); return; }
-    if (personA.pin !== personA.pin2 || personB.pin !== personB.pin2) { setErr("PIN and confirmation don't match."); return; }
-    if (!personA.name.trim() || !personB.name.trim()) { setErr("Please enter both names."); return; }
+    if (admin.pin.length !== 6) { setErr("PIN must be exactly 6 digits (Firebase requires 6+ character passwords)."); return; }
+    if (admin.pin !== admin.pin2) { setErr("PIN and confirmation don't match."); return; }
+    if (!admin.name.trim()) { setErr("Please enter a name."); return; }
     setSaving(true);
     try {
-      await onCreate(
-        { name: personA.name.trim(), username: slugUser(personA.name), pin: personA.pin, role: "admin", canManageAccounts: true },
-        { name: personB.name.trim(), username: slugUser(personB.name), pin: personB.pin, role: "admin", canManageAccounts: false }
-      );
+      await onCreate({ name: admin.name.trim(), username: slugUser(admin.name), pin: admin.pin });
     } catch (e2) {
-      setErr(e2.message || "Could not create accounts.");
+      setErr(e2.message || "Could not create the account.");
       setSaving(false);
     }
   };
 
   return (
-    <div className="w-full max-w-lg">
+    <div className="w-full max-w-md">
       <div className="flex flex-col items-center mb-6">
         <LogoMark size={72} />
         <h1 className="font-display text-2xl mt-3 text-center" style={{ color: INK }}>Welcome to {COMPANY.name}</h1>
         <p className="text-xs text-slate-400 mt-0.5 text-center">{COMPANY.tagline}</p>
-        <p className="text-sm text-slate-500 mt-3 text-center">Set up your two Admin accounts to get started. Each needs a 6-digit PIN used to sign in — this becomes their real login password behind the scenes.</p>
+        <p className="text-sm text-slate-500 mt-3 text-center">Set up the Admin account to get started. It needs a 6-digit PIN used to sign in — this becomes the real login password behind the scenes. You can add Moderator or Staff accounts afterward from inside the app.</p>
       </div>
       <Card className="p-6">
-        <form onSubmit={submit} className="space-y-6">
-          <div>
-            <div className="flex items-center gap-2 mb-3">
-              <Pill color={GOLD}>Admin</Pill>
-              <span className="text-xs text-slate-400">Full access, and the only one who can create/block staff & admin accounts</span>
-            </div>
-            <div className="grid grid-cols-3 gap-3">
-              <Field label="Name"><input className={inputCls} style={inputStyle} value={personA.name} onChange={(e) => setPersonA({ ...personA, name: e.target.value })} required /></Field>
-              <Field label="PIN"><input type="password" inputMode="numeric" maxLength={6} className={inputCls} style={inputStyle} value={personA.pin} onChange={(e) => setPersonA({ ...personA, pin: e.target.value.replace(/\D/g, "") })} required /></Field>
-              <Field label="Confirm PIN"><input type="password" inputMode="numeric" maxLength={6} className={inputCls} style={inputStyle} value={personA.pin2} onChange={(e) => setPersonA({ ...personA, pin2: e.target.value.replace(/\D/g, "") })} required /></Field>
-            </div>
-          </div>
-          <div>
-            <div className="flex items-center gap-2 mb-3">
-              <Pill color={GOLD}>Admin</Pill>
-              <span className="text-xs text-slate-400">Full access to stock, sales and ledger — can't create or block accounts</span>
-            </div>
-            <div className="grid grid-cols-3 gap-3">
-              <Field label="Name"><input className={inputCls} style={inputStyle} value={personB.name} onChange={(e) => setPersonB({ ...personB, name: e.target.value })} required /></Field>
-              <Field label="PIN"><input type="password" inputMode="numeric" maxLength={6} className={inputCls} style={inputStyle} value={personB.pin} onChange={(e) => setPersonB({ ...personB, pin: e.target.value.replace(/\D/g, "") })} required /></Field>
-              <Field label="Confirm PIN"><input type="password" inputMode="numeric" maxLength={6} className={inputCls} style={inputStyle} value={personB.pin2} onChange={(e) => setPersonB({ ...personB, pin2: e.target.value.replace(/\D/g, "") })} required /></Field>
-            </div>
+        <form onSubmit={submit} className="space-y-4">
+          <Field label="Admin name"><input autoFocus className={inputCls} style={inputStyle} value={admin.name} onChange={(e) => setAdmin({ ...admin, name: e.target.value })} required /></Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="PIN"><input type="password" inputMode="numeric" maxLength={6} className={inputCls} style={inputStyle} value={admin.pin} onChange={(e) => setAdmin({ ...admin, pin: e.target.value.replace(/\D/g, "") })} required /></Field>
+            <Field label="Confirm PIN"><input type="password" inputMode="numeric" maxLength={6} className={inputCls} style={inputStyle} value={admin.pin2} onChange={(e) => setAdmin({ ...admin, pin2: e.target.value.replace(/\D/g, "") })} required /></Field>
           </div>
           {err && <div className="text-xs px-3 py-2 rounded-md" style={{ background: ROSE + "1a", color: ROSE }}>{err}</div>}
-          <PrimaryButton type="submit" disabled={saving} className="w-full justify-center"><ShieldCheck size={16} /> {saving ? "Creating…" : "Create Accounts & Continue"}</PrimaryButton>
+          <PrimaryButton type="submit" disabled={saving} className="w-full justify-center"><ShieldCheck size={16} /> {saving ? "Creating…" : "Create Admin Account & Continue"}</PrimaryButton>
         </form>
       </Card>
       <p className="text-[11px] text-slate-400 text-center mt-4">Note: this is a lightweight PIN lock for your team's convenience, not bank-grade security. Don't reuse sensitive passwords here.</p>
@@ -305,7 +286,7 @@ function SetupWizard({ onCreate }) {
   );
 }
 
-function LoginScreen({ error, onLogin }) {
+function LoginScreen({ error, notice, onLogin }) {
   const [name, setName] = useState("");
   const [pin, setPin] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -327,6 +308,13 @@ function LoginScreen({ error, onLogin }) {
         <p className="text-sm text-slate-500 mt-2">Staff Login</p>
       </div>
 
+      {notice?.enabled && (notice?.text || notice?.imageUrl) && (
+        <div className="mb-4 rounded-md border p-4 text-sm" style={{ borderColor: GOLD, background: "#fdf5e8" }}>
+          {notice.imageUrl && <img src={notice.imageUrl} alt="" className="w-full rounded mb-2 max-h-40 object-contain" />}
+          {notice.text && <div className="whitespace-pre-wrap" style={{ color: "#8a5a00" }}>{notice.text}</div>}
+        </div>
+      )}
+
       <Card className="p-6">
         <form onSubmit={submit} className="space-y-4">
           <Field label="Your name">
@@ -345,7 +333,7 @@ function LoginScreen({ error, onLogin }) {
 
 /* ---------------------------------- Main App ---------------------------------- */
 
-function MainApp({ currentUser, logout, users, products, clients, invoices, payments, counters, branding }) {
+function MainApp({ currentUser, logout, users, products, clients, invoices, payments, counters, branding, ad }) {
   const allowed = tabsForUser(currentUser);
   const [tab, setTab] = useState(allowed[0] || "dashboard");
   const [navOpen, setNavOpen] = useState(false);
@@ -459,7 +447,7 @@ function MainApp({ currentUser, logout, users, products, clients, invoices, paym
                 stockValue={stockValue} totalSales={totalSales} totalDue={totalDue}
                 lowStock={lowStock} invoices={invoices} clients={clients} clientDue={clientDue}
                 goTab={setTab} openClient={(id) => { setActiveClientId(id); setTab("clients"); }}
-                openInvoice={(id) => openPrint(id, "invoice")} allowed={allowed}
+                openInvoice={(id) => openPrint(id, "invoice")} allowed={allowed} ad={ad}
               />
             )}
             {tab === "stock" && allowed.includes("stock") && (
@@ -487,7 +475,7 @@ function MainApp({ currentUser, logout, users, products, clients, invoices, paym
               <UsersView users={users} currentUser={currentUser} canManageAccounts={canManageAccounts} notify={notify} notifyErr={notifyErr} />
             )}
             {tab === "settings" && canSeeSettings && (
-              <SettingsView branding={branding} notify={notify} notifyErr={notifyErr} />
+              <SettingsView branding={branding} canManageAccounts={canManageAccounts} notify={notify} notifyErr={notifyErr} />
             )}
             {!allowed.includes(tab) && tab !== "users" && tab !== "settings" && (
               <EmptyNote text="You don't have access to this section. Ask your admin if you need it." />
@@ -609,7 +597,27 @@ function Pill({ children, color }) {
 
 /* ---------------------------------- Dashboard ---------------------------------- */
 
-function Dashboard({ stockValue, totalSales, totalDue, lowStock, invoices, clients, clientDue, goTab, openClient, openInvoice, allowed }) {
+function AdBanner({ ad }) {
+  const [dismissed, setDismissed] = useState(false);
+  if (!ad?.enabled || dismissed || (!ad?.imageUrl && !ad?.caption)) return null;
+  const Wrapper = ad.link ? "a" : "div";
+  const wrapperProps = ad.link ? { href: ad.link, target: "_blank", rel: "noopener noreferrer" } : {};
+  return (
+    <Card className="p-0 overflow-hidden relative">
+      <button onClick={() => setDismissed(true)} className="absolute top-2 right-2 z-10 w-6 h-6 rounded-full flex items-center justify-center bg-white/90 shadow" style={{ color: INK }}>
+        <X size={13} />
+      </button>
+      <Wrapper {...wrapperProps} className={`flex items-stretch ${ad.link ? "hover:opacity-95" : ""}`}>
+        {ad.imageUrl && <img src={ad.imageUrl} alt="" className="w-32 sm:w-48 object-cover shrink-0" />}
+        {ad.caption && (
+          <div className="p-4 flex items-center text-sm text-slate-700">{ad.caption}</div>
+        )}
+      </Wrapper>
+    </Card>
+  );
+}
+
+function Dashboard({ stockValue, totalSales, totalDue, lowStock, invoices, clients, clientDue, goTab, openClient, openInvoice, allowed, ad }) {
   const recent = [...invoices].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 6);
   const topDue = [...clients].map((c) => ({ ...c, due: clientDue(c.id) })).filter((c) => c.due > 0).sort((a, b) => b.due - a.due).slice(0, 5);
 
@@ -619,6 +627,8 @@ function Dashboard({ stockValue, totalSales, totalDue, lowStock, invoices, clien
         <h1 className="font-display text-2xl" style={{ color: INK }}>Dashboard</h1>
         <p className="text-sm text-slate-500 mt-0.5">Overview of stock, sales and outstanding dues.</p>
       </div>
+
+      <AdBanner ad={ad} />
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <StatCard label="Stock Value" value={money(stockValue)} icon={Package} accent={TEAL} sub="at purchase cost" />
@@ -1627,8 +1637,10 @@ function UsersView({ users, currentUser, canManageAccounts, notify, notifyErr })
   const saveAccount = async (data) => {
     try {
       if (editing) {
-        // Editing never touches login credentials — just name/permissions.
-        const patch = editing.role === "admin" ? { name: data.name } : { name: data.name, tabs: data.tabs };
+        // Editing never touches login credentials — just name/role/tabs.
+        // Note: role here can only ever be 'manager' or 'staff' — the
+        // form never offers 'admin', and Jewel can't edit her own row.
+        const patch = { name: data.name, role: data.role, tabs: data.role === "staff" ? data.tabs : [] };
         await updateDoc(doc(db, "users", editing.id), patch);
         notify("Account updated");
       } else {
@@ -1638,9 +1650,9 @@ function UsersView({ users, currentUser, canManageAccounts, notify, notifyErr })
         const uid = await registerAuthAccount(data.username, data.pin);
         await resetSecondaryAuth();
         // 2) Write their profile as the admin.
-        const tabs = data.role === "admin" ? [] : data.tabs;
+        const tabs = data.role === "staff" ? data.tabs : [];
         await setDoc(doc(db, "users", uid), { name: data.name, username: data.username, role: data.role, active: true, tabs, shielded: false, canManageAccounts: false });
-        notify(data.role === "admin" ? "Admin account created" : "Staff account created");
+        notify(data.role === "manager" ? "Moderator account created" : "Staff account created");
       }
       setShowForm(false); setEditing(null);
     } catch (e) {
@@ -1697,7 +1709,7 @@ function UsersView({ users, currentUser, canManageAccounts, notify, notifyErr })
         <div>
           <h1 className="font-display text-2xl" style={{ color: INK }}>Staff Accounts</h1>
           <p className="text-sm text-slate-500 mt-0.5">
-            {canManageAccounts ? "Add another Admin, or a limited Staff account for a specific job." : "You can view accounts here — only Jewel can add, block, or remove them."}
+            {canManageAccounts ? "Add a Moderator, or a limited Staff account for a specific job." : "You can view accounts here — only Jewel can add, block, or remove them."}
           </p>
         </div>
         {canManageAccounts && <PrimaryButton onClick={() => { setEditing(null); setShowForm(true); }}><UserPlus size={16} /> Add Account</PrimaryButton>}
@@ -1778,7 +1790,7 @@ function BlockUserModal({ user, onClose, onBlock }) {
 function StaffFormModal({ initial, onClose, onSave }) {
   const [name, setName] = useState(initial?.name || "");
   const [pin, setPin] = useState("");
-  const [role, setRole] = useState(initial?.role || "staff");
+  const [role, setRole] = useState(initial?.role === "manager" ? "manager" : initial?.role === "staff" ? "staff" : "staff");
   const [tabs, setTabs] = useState(initial?.tabs || ["dashboard", "sale"]);
   const [err, setErr] = useState("");
 
@@ -1790,7 +1802,7 @@ function StaffFormModal({ initial, onClose, onSave }) {
     if (!initial && pin.length !== 6) { setErr("PIN must be exactly 6 digits."); return; }
     if (role === "staff" && tabs.length === 0) { setErr("Give access to at least one section."); return; }
     const data = initial
-      ? { name: name.trim(), tabs }
+      ? { name: name.trim(), role, tabs }
       : { name: name.trim(), username: slugUser(name), tabs, pin, role };
     onSave(data);
   };
@@ -1799,19 +1811,18 @@ function StaffFormModal({ initial, onClose, onSave }) {
     <Modal onClose={onClose} title={initial ? "Edit Account" : "Add Account"}>
       <form onSubmit={submit} className="space-y-4">
         <Field label="Name"><input autoFocus className={inputCls} style={inputStyle} value={name} onChange={(e) => setName(e.target.value)} required /></Field>
-        {!initial && (
-          <div>
-            <div className="text-xs font-medium text-slate-600 mb-2">Role</div>
-            <div className="grid grid-cols-2 gap-2">
-              <label className="flex items-center gap-2 text-sm px-3 py-2 rounded-md border cursor-pointer" style={{ borderColor: role === "admin" ? GOLD : "#e7e0d3", background: role === "admin" ? "#fdf5e8" : "white" }}>
-                <input type="radio" name="role" checked={role === "admin"} onChange={() => setRole("admin")} /> Admin — full access
-              </label>
-              <label className="flex items-center gap-2 text-sm px-3 py-2 rounded-md border cursor-pointer" style={{ borderColor: role === "staff" ? GOLD : "#e7e0d3", background: role === "staff" ? "#fdf5e8" : "white" }}>
-                <input type="radio" name="role" checked={role === "staff"} onChange={() => setRole("staff")} /> Staff — limited access
-              </label>
-            </div>
+        <div>
+          <div className="text-xs font-medium text-slate-600 mb-2">Role</div>
+          <div className="grid grid-cols-2 gap-2">
+            <label className="flex items-center gap-2 text-sm px-3 py-2 rounded-md border cursor-pointer" style={{ borderColor: role === "manager" ? GOLD : "#e7e0d3", background: role === "manager" ? "#fdf5e8" : "white" }}>
+              <input type="radio" name="role" checked={role === "manager"} onChange={() => setRole("manager")} /> Moderator — full operational access
+            </label>
+            <label className="flex items-center gap-2 text-sm px-3 py-2 rounded-md border cursor-pointer" style={{ borderColor: role === "staff" ? GOLD : "#e7e0d3", background: role === "staff" ? "#fdf5e8" : "white" }}>
+              <input type="radio" name="role" checked={role === "staff"} onChange={() => setRole("staff")} /> Staff — limited access
+            </label>
           </div>
-        )}
+          <div className="text-[11px] text-slate-400 mt-1">Moderator can't manage staff accounts. Only Jewel can.</div>
+        </div>
         {!initial && (
           <Field label="PIN (exactly 6 digits)">
             <input type="password" inputMode="numeric" maxLength={6} className={inputCls} style={inputStyle} value={pin} onChange={(e) => setPin(e.target.value.replace(/\D/g, ""))} />
@@ -1820,7 +1831,7 @@ function StaffFormModal({ initial, onClose, onSave }) {
         {initial && (
           <div className="text-xs text-slate-400 -mt-1">PINs can only be changed by the account holder themselves, from their own "Change PIN" menu after logging in.</div>
         )}
-        {(role === "staff" || (initial && initial.role === "staff")) && (
+        {role === "staff" && (
           <div>
             <div className="text-xs font-medium text-slate-600 mb-2">Give access to</div>
             <div className="grid grid-cols-2 gap-2">
@@ -1903,6 +1914,12 @@ function SignatureBlock({ branding }) {
           {branding?.sealUrl && <img src={branding.sealUrl} alt="" style={{ height: 56, objectFit: "contain", opacity: 0.92 }} />}
         </div>
         <div className="border-t pt-1 w-full text-right" style={{ borderColor: "#999" }}>Authorized Signature</div>
+        {(branding?.signatoryName || branding?.signatoryDesignation) && (
+          <div className="text-right mt-0.5">
+            {branding?.signatoryName && <div className="font-medium">{branding.signatoryName}</div>}
+            {branding?.signatoryDesignation && <div className="text-slate-400">{branding.signatoryDesignation}</div>}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -2090,9 +2107,11 @@ function fileToDataUrl(file) {
   });
 }
 
-function SettingsView({ branding, notify, notifyErr }) {
+function SettingsView({ branding, canManageAccounts, notify, notifyErr }) {
   const [signaturePreview, setSignaturePreview] = useState(branding?.signatureUrl || null);
   const [sealPreview, setSealPreview] = useState(branding?.sealUrl || null);
+  const [signatoryName, setSignatoryName] = useState(branding?.signatoryName || "");
+  const [signatoryDesignation, setSignatoryDesignation] = useState(branding?.signatoryDesignation || "");
   const [saving, setSaving] = useState(false);
 
   const handleFile = async (file, setter) => {
@@ -2105,7 +2124,10 @@ function SettingsView({ branding, notify, notifyErr }) {
   const save = async () => {
     setSaving(true);
     try {
-      await setDoc(brandingRef, { signatureUrl: signaturePreview || "", sealUrl: sealPreview || "" }, { merge: true });
+      await setDoc(brandingRef, {
+        signatureUrl: signaturePreview || "", sealUrl: sealPreview || "",
+        signatoryName: signatoryName.trim(), signatoryDesignation: signatoryDesignation.trim(),
+      }, { merge: true });
       notify("Signature & seal saved — they'll now appear on every invoice and challan");
     } catch (e) { notifyErr(e); } finally { setSaving(false); }
   };
@@ -2132,6 +2154,12 @@ function SettingsView({ branding, notify, notifyErr }) {
           </div>
         </div>
 
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Signatory name"><input className={inputCls} style={inputStyle} value={signatoryName} onChange={(e) => setSignatoryName(e.target.value)} placeholder="e.g. Md. Jewel Islam" /></Field>
+          <Field label="Designation"><input className={inputCls} style={inputStyle} value={signatoryDesignation} onChange={(e) => setSignatoryDesignation(e.target.value)} placeholder="e.g. Managing Director" /></Field>
+        </div>
+        <div className="text-[11px] text-slate-400 -mt-2">Shown printed under the signature/seal on every invoice and challan.</div>
+
         <div>
           <div className="text-xs font-medium text-slate-600 mb-2">Company Seal / Stamp</div>
           <div className="flex items-center gap-4">
@@ -2150,6 +2178,125 @@ function SettingsView({ branding, notify, notifyErr }) {
 
         <PrimaryButton onClick={save} disabled={saving}>{saving ? "Saving…" : "Save"}</PrimaryButton>
       </Card>
+
+      {canManageAccounts && <AdSettingsCard notify={notify} notifyErr={notifyErr} />}
+      {canManageAccounts && <LoginNoticeSettingsCard notify={notify} notifyErr={notifyErr} />}
     </div>
+  );
+}
+
+function AdSettingsCard({ notify, notifyErr }) {
+  const [enabled, setEnabled] = useState(false);
+  const [imagePreview, setImagePreview] = useState(null);
+  const [caption, setCaption] = useState("");
+  const [link, setLink] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+
+  useEffect(() => {
+    const unsub = onSnapshot(adRef, (s) => {
+      const d = s.exists() ? s.data() : {};
+      setEnabled(!!d.enabled); setImagePreview(d.imageUrl || null); setCaption(d.caption || ""); setLink(d.link || "");
+      setLoaded(true);
+    });
+    return unsub;
+  }, []);
+
+  const handleFile = async (file) => {
+    if (!file) return;
+    if (file.size > 500 * 1024) { notify("Please use a smaller image (under 500KB).", "err"); return; }
+    setImagePreview(await fileToDataUrl(file));
+  };
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await setDoc(adRef, { enabled, imageUrl: imagePreview || "", caption: caption.trim(), link: link.trim() }, { merge: true });
+      notify("Advertisement saved");
+    } catch (e) { notifyErr(e); } finally { setSaving(false); }
+  };
+
+  if (!loaded) return null;
+
+  return (
+    <Card className="p-5 space-y-4">
+      <div>
+        <h2 className="font-display text-lg" style={{ color: INK }}>Advertisement</h2>
+        <p className="text-xs text-slate-500 mt-0.5">Shows as a banner at the top of everyone's Dashboard — the first screen any role sees after logging in.</p>
+      </div>
+      <label className="flex items-center gap-2 text-sm">
+        <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} /> Show this advertisement
+      </label>
+      <div className="flex items-center gap-4">
+        <div className="w-32 h-16 border rounded-md flex items-center justify-center bg-stone-50" style={{ borderColor: "#e7e0d3" }}>
+          {imagePreview ? <img src={imagePreview} alt="" className="max-h-full max-w-full object-contain" /> : <span className="text-xs text-slate-300">No image</span>}
+        </div>
+        <label className="inline-flex items-center gap-2 px-3 py-2 rounded-md border text-sm cursor-pointer" style={{ borderColor: "#d9d0bb", color: INK }}>
+          <Upload size={14} /> Upload
+          <input type="file" accept="image/*" className="hidden" onChange={(e) => handleFile(e.target.files[0])} />
+        </label>
+        {imagePreview && <button onClick={() => setImagePreview(null)} className="text-xs" style={{ color: ROSE }}>Remove</button>}
+      </div>
+      <Field label="Caption text"><input className={inputCls} style={inputStyle} value={caption} onChange={(e) => setCaption(e.target.value)} placeholder="e.g. New shipment arriving — book early!" /></Field>
+      <Field label="Link (optional — opens when clicked)"><input className={inputCls} style={inputStyle} value={link} onChange={(e) => setLink(e.target.value)} placeholder="https://…" /></Field>
+      <PrimaryButton onClick={save} disabled={saving}>{saving ? "Saving…" : "Save Advertisement"}</PrimaryButton>
+    </Card>
+  );
+}
+
+function LoginNoticeSettingsCard({ notify, notifyErr }) {
+  const [enabled, setEnabled] = useState(false);
+  const [imagePreview, setImagePreview] = useState(null);
+  const [text, setText] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+
+  useEffect(() => {
+    const unsub = onSnapshot(loginNoticeRef, (s) => {
+      const d = s.exists() ? s.data() : {};
+      setEnabled(!!d.enabled); setImagePreview(d.imageUrl || null); setText(d.text || "");
+      setLoaded(true);
+    });
+    return unsub;
+  }, []);
+
+  const handleFile = async (file) => {
+    if (!file) return;
+    if (file.size > 500 * 1024) { notify("Please use a smaller image (under 500KB).", "err"); return; }
+    setImagePreview(await fileToDataUrl(file));
+  };
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await setDoc(loginNoticeRef, { enabled, imageUrl: imagePreview || "", text: text.trim() }, { merge: true });
+      notify("Login page notice saved");
+    } catch (e) { notifyErr(e); } finally { setSaving(false); }
+  };
+
+  if (!loaded) return null;
+
+  return (
+    <Card className="p-5 space-y-4">
+      <div>
+        <h2 className="font-display text-lg" style={{ color: INK }}>Login Page Notice</h2>
+        <p className="text-xs text-slate-500 mt-0.5">Shows to everyone, even before they log in — good for a subscription reminder or an important announcement.</p>
+      </div>
+      <label className="flex items-center gap-2 text-sm">
+        <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} /> Show this notice on the login page
+      </label>
+      <div className="flex items-center gap-4">
+        <div className="w-32 h-16 border rounded-md flex items-center justify-center bg-stone-50" style={{ borderColor: "#e7e0d3" }}>
+          {imagePreview ? <img src={imagePreview} alt="" className="max-h-full max-w-full object-contain" /> : <span className="text-xs text-slate-300">No image</span>}
+        </div>
+        <label className="inline-flex items-center gap-2 px-3 py-2 rounded-md border text-sm cursor-pointer" style={{ borderColor: "#d9d0bb", color: INK }}>
+          <Upload size={14} /> Upload
+          <input type="file" accept="image/*" className="hidden" onChange={(e) => handleFile(e.target.files[0])} />
+        </label>
+        {imagePreview && <button onClick={() => setImagePreview(null)} className="text-xs" style={{ color: ROSE }}>Remove</button>}
+      </div>
+      <Field label="Message"><textarea rows={3} className={inputCls} style={inputStyle} value={text} onChange={(e) => setText(e.target.value)} placeholder="e.g. Subscription renewal due — please contact admin to continue using this app." /></Field>
+      <PrimaryButton onClick={save} disabled={saving}>{saving ? "Saving…" : "Save Notice"}</PrimaryButton>
+    </Card>
   );
 }
