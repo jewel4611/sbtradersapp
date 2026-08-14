@@ -364,7 +364,7 @@ function MainApp({ currentUser, logout, users, products, clients, invoices, paym
   const visibleNav = ALL_TABS.filter((n) => allowed.includes(n.id));
   const canSeeUsers = allowed.includes("users");
   const canSeeSettings = allowed.includes("settings");
-  const canEditRecords = currentUser.role === "admin" || currentUser.role === "manager";
+  const canEditRecords = currentUser.role === "admin" || currentUser.role === "manager" || (currentUser.role === "staff" && currentUser.canEditRecords === true);
   const canManageAccounts = currentUser.role === "admin" && currentUser.canManageAccounts === true;
   const openPrint = (id, kind) => setPrintDoc({ id, kind });
 
@@ -597,18 +597,29 @@ function Pill({ children, color }) {
 
 /* ---------------------------------- Dashboard ---------------------------------- */
 
+const normalizeUrl = (url) => {
+  if (!url) return "";
+  const trimmed = url.trim();
+  return /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+};
+
 function AdBanner({ ad }) {
   const [dismissed, setDismissed] = useState(false);
   if (!ad?.enabled || dismissed || (!ad?.imageUrl && !ad?.caption)) return null;
-  const Wrapper = ad.link ? "a" : "div";
-  const wrapperProps = ad.link ? { href: ad.link, target: "_blank", rel: "noopener noreferrer" } : {};
+  const link = normalizeUrl(ad.link);
+  const Wrapper = link ? "a" : "div";
+  const wrapperProps = link ? { href: link, target: "_blank", rel: "noopener noreferrer" } : {};
   return (
     <Card className="p-0 overflow-hidden relative">
       <button onClick={() => setDismissed(true)} className="absolute top-2 right-2 z-10 w-6 h-6 rounded-full flex items-center justify-center bg-white/90 shadow" style={{ color: INK }}>
         <X size={13} />
       </button>
-      <Wrapper {...wrapperProps} className={`flex items-stretch ${ad.link ? "hover:opacity-95" : ""}`}>
-        {ad.imageUrl && <img src={ad.imageUrl} alt="" className="w-32 sm:w-48 object-cover shrink-0" />}
+      <Wrapper {...wrapperProps} className={`flex flex-col sm:flex-row items-stretch ${link ? "hover:opacity-95 cursor-pointer" : ""}`}>
+        {ad.imageUrl && (
+          <div className="w-full sm:w-56 h-40 shrink-0 bg-stone-100 flex items-center justify-center">
+            <img src={ad.imageUrl} alt="" className="w-full h-full object-contain" />
+          </div>
+        )}
         {ad.caption && (
           <div className="p-4 flex items-center text-sm text-slate-700">{ad.caption}</div>
         )}
@@ -894,12 +905,15 @@ function NewSale({ products, clients, notify, notifyErr, onDone }) {
   const [date, setDate] = useState(todayISO());
   const [submitting, setSubmitting] = useState(false);
 
+  const [clientFocused, setClientFocused] = useState(false);
+  const [productFocused, setProductFocused] = useState(false);
+
   const client = clients.find((c) => c.id === clientId);
-  const matchingClients = clientQuery
-    ? clients.filter((c) => c.name.toLowerCase().includes(clientQuery.toLowerCase())).slice(0, 6)
+  const matchingClients = clientFocused
+    ? clients.filter((c) => c.name.toLowerCase().includes(clientQuery.toLowerCase())).slice(0, 8)
     : [];
-  const matchingProducts = productQuery
-    ? products.filter((p) => p.qty > 0 && p.name.toLowerCase().includes(productQuery.toLowerCase())).slice(0, 6)
+  const matchingProducts = productFocused
+    ? products.filter((p) => p.qty > 0 && p.name.toLowerCase().includes(productQuery.toLowerCase())).slice(0, 8)
     : [];
 
   const addToCart = (p) => {
@@ -1004,17 +1018,21 @@ function NewSale({ products, clients, notify, notifyErr, onDone }) {
               <div className="space-y-2">
                 <div className="relative">
                   <Search size={15} className="absolute left-3 top-2.5 text-slate-400" />
-                  <input value={clientQuery} onChange={(e) => setClientQuery(e.target.value)} placeholder="Search existing client…" className={inputCls} style={{ ...inputStyle, paddingLeft: "2rem" }} />
+                  <input
+                    value={clientQuery} onChange={(e) => setClientQuery(e.target.value)}
+                    onFocus={() => setClientFocused(true)} onBlur={() => setTimeout(() => setClientFocused(false), 150)}
+                    placeholder="Click to see all clients, or type to search…" className={inputCls} style={{ ...inputStyle, paddingLeft: "2rem" }}
+                  />
+                  {matchingClients.length > 0 && (
+                    <div className="absolute z-10 mt-1 w-full border rounded-md divide-y bg-white shadow-md max-h-64 overflow-y-auto" style={{ borderColor: "#e7e0d3" }}>
+                      {matchingClients.map((c) => (
+                        <button key={c.id} type="button" onClick={() => { setClientId(c.id); setClientQuery(""); }} className="w-full text-left px-3 py-2 text-sm hover:bg-stone-50">
+                          {c.name} <span className="text-slate-400">· {c.phone}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
-                {matchingClients.length > 0 && (
-                  <div className="border rounded-md divide-y" style={{ borderColor: "#e7e0d3" }}>
-                    {matchingClients.map((c) => (
-                      <button key={c.id} onClick={() => { setClientId(c.id); setClientQuery(""); }} className="w-full text-left px-3 py-2 text-sm hover:bg-stone-50">
-                        {c.name} <span className="text-slate-400">· {c.phone}</span>
-                      </button>
-                    ))}
-                  </div>
-                )}
                 <GhostButton onClick={() => setShowNewClient(true)}><Plus size={14} /> Add new client</GhostButton>
               </div>
             )}
@@ -1024,9 +1042,13 @@ function NewSale({ products, clients, notify, notifyErr, onDone }) {
             <h2 className="font-display text-lg mb-3" style={{ color: INK }}>Items</h2>
             <div className="relative mb-3">
               <Search size={15} className="absolute left-3 top-2.5 text-slate-400" />
-              <input value={productQuery} onChange={(e) => setProductQuery(e.target.value)} placeholder="Search stock to add…" className={inputCls} style={{ ...inputStyle, paddingLeft: "2rem" }} />
+              <input
+                value={productQuery} onChange={(e) => setProductQuery(e.target.value)}
+                onFocus={() => setProductFocused(true)} onBlur={() => setTimeout(() => setProductFocused(false), 150)}
+                placeholder="Click to see all stock, or type to search…" className={inputCls} style={{ ...inputStyle, paddingLeft: "2rem" }}
+              />
               {matchingProducts.length > 0 && (
-                <div className="absolute z-10 mt-1 w-full border rounded-md divide-y bg-white shadow-md" style={{ borderColor: "#e7e0d3" }}>
+                <div className="absolute z-10 mt-1 w-full border rounded-md divide-y bg-white shadow-md max-h-64 overflow-y-auto" style={{ borderColor: "#e7e0d3" }}>
                   {matchingProducts.map((p) => (
                     <button key={p.id} type="button" onClick={() => addToCart(p)} className="w-full text-left px-3 py-2 text-sm hover:bg-stone-50 flex justify-between">
                       <span>{p.name}</span>
@@ -1161,10 +1183,12 @@ function EditInvoiceModal({ invoice, clients, products, payments, onClose, notif
   const [discount, setDiscount] = useState(invoice.discount || 0);
   const [paidNow, setPaidNow] = useState(invoice.paid || 0);
   const [saving, setSaving] = useState(false);
+  const [clientFocused, setClientFocused] = useState(false);
+  const [productFocused, setProductFocused] = useState(false);
 
   const client = clients.find((c) => c.id === clientId);
-  const matchingClients = clientQuery ? clients.filter((c) => c.name.toLowerCase().includes(clientQuery.toLowerCase())).slice(0, 6) : [];
-  const matchingProducts = productQuery ? products.filter((p) => p.name.toLowerCase().includes(productQuery.toLowerCase())).slice(0, 6) : [];
+  const matchingClients = clientFocused ? clients.filter((c) => c.name.toLowerCase().includes(clientQuery.toLowerCase())).slice(0, 8) : [];
+  const matchingProducts = productFocused ? products.filter((p) => p.name.toLowerCase().includes(productQuery.toLowerCase())).slice(0, 8) : [];
   const missingProductIds = items.some((it) => !it.productId);
 
   const addItem = (p) => {
@@ -1224,9 +1248,13 @@ function EditInvoiceModal({ invoice, clients, products, payments, onClose, notif
                 </div>
               ) : (
                 <div className="relative">
-                  <input value={clientQuery} onChange={(e) => setClientQuery(e.target.value)} placeholder="Search client…" className={inputCls} style={inputStyle} />
+                  <input
+                    value={clientQuery} onChange={(e) => setClientQuery(e.target.value)}
+                    onFocus={() => setClientFocused(true)} onBlur={() => setTimeout(() => setClientFocused(false), 150)}
+                    placeholder="Click to see all clients, or type to search…" className={inputCls} style={inputStyle}
+                  />
                   {matchingClients.length > 0 && (
-                    <div className="absolute z-10 mt-1 w-full border rounded-md divide-y bg-white shadow-md" style={{ borderColor: "#e7e0d3" }}>
+                    <div className="absolute z-10 mt-1 w-full border rounded-md divide-y bg-white shadow-md max-h-56 overflow-y-auto" style={{ borderColor: "#e7e0d3" }}>
                       {matchingClients.map((c) => (
                         <button key={c.id} type="button" onClick={() => { setClientId(c.id); setClientQuery(""); }} className="w-full text-left px-3 py-2 text-sm hover:bg-stone-50">{c.name}</button>
                       ))}
@@ -1242,9 +1270,13 @@ function EditInvoiceModal({ invoice, clients, products, payments, onClose, notif
             <div className="text-xs font-medium text-slate-600 mb-2">Items</div>
             <div className="relative mb-2">
               <Search size={15} className="absolute left-3 top-2.5 text-slate-400" />
-              <input value={productQuery} onChange={(e) => setProductQuery(e.target.value)} placeholder="Add another item…" className={inputCls} style={{ ...inputStyle, paddingLeft: "2rem" }} />
+              <input
+                value={productQuery} onChange={(e) => setProductQuery(e.target.value)}
+                onFocus={() => setProductFocused(true)} onBlur={() => setTimeout(() => setProductFocused(false), 150)}
+                placeholder="Click to see all stock, or type to search…" className={inputCls} style={{ ...inputStyle, paddingLeft: "2rem" }}
+              />
               {matchingProducts.length > 0 && (
-                <div className="absolute z-10 mt-1 w-full border rounded-md divide-y bg-white shadow-md" style={{ borderColor: "#e7e0d3" }}>
+                <div className="absolute z-10 mt-1 w-full border rounded-md divide-y bg-white shadow-md max-h-56 overflow-y-auto" style={{ borderColor: "#e7e0d3" }}>
                   {matchingProducts.map((p) => (
                     <button key={p.id} type="button" onClick={() => addItem(p)} className="w-full text-left px-3 py-2 text-sm hover:bg-stone-50 flex justify-between">
                       <span>{p.name}</span><span className="text-slate-400 text-xs">{p.qty} {p.unit} avail</span>
@@ -1640,7 +1672,7 @@ function UsersView({ users, currentUser, canManageAccounts, notify, notifyErr })
         // Editing never touches login credentials — just name/role/tabs.
         // Note: role here can only ever be 'manager' or 'staff' — the
         // form never offers 'admin', and Jewel can't edit her own row.
-        const patch = { name: data.name, role: data.role, tabs: data.role === "staff" ? data.tabs : [] };
+        const patch = { name: data.name, role: data.role, tabs: data.role === "staff" ? data.tabs : [], canEditRecords: data.role === "staff" ? !!data.canEditRecords : false };
         await updateDoc(doc(db, "users", editing.id), patch);
         notify("Account updated");
       } else {
@@ -1651,7 +1683,8 @@ function UsersView({ users, currentUser, canManageAccounts, notify, notifyErr })
         await resetSecondaryAuth();
         // 2) Write their profile as the admin.
         const tabs = data.role === "staff" ? data.tabs : [];
-        await setDoc(doc(db, "users", uid), { name: data.name, username: data.username, role: data.role, active: true, tabs, shielded: false, canManageAccounts: false });
+        const canEditRecords = data.role === "staff" ? !!data.canEditRecords : false;
+        await setDoc(doc(db, "users", uid), { name: data.name, username: data.username, role: data.role, active: true, tabs, shielded: false, canManageAccounts: false, canEditRecords });
         notify(data.role === "manager" ? "Moderator account created" : "Staff account created");
       }
       setShowForm(false); setEditing(null);
@@ -1732,7 +1765,11 @@ function UsersView({ users, currentUser, canManageAccounts, notify, notifyErr })
                 <td className="px-4 py-3 font-medium">{u.name}{u.id === currentUser.id && <span className="text-slate-400 font-normal text-xs"> (you)</span>}</td>
                 <td className="px-4 py-3"><Pill color={roleColor(u.role)}>{roleLabel(u.role)}</Pill></td>
                 <td className="px-4 py-3 text-xs text-slate-500">
-                  {u.role === "admin" ? (u.canManageAccounts ? "Everything, incl. managing accounts" : "Everything except managing accounts") : u.role === "manager" ? "Everything except staff accounts" : (u.tabs || []).map((t) => ALL_TABS.find((n) => n.id === t)?.label).filter(Boolean).join(", ") || "None"}
+                  {u.role === "admin"
+                    ? (u.canManageAccounts ? "Everything, incl. managing accounts" : "Everything except managing accounts")
+                    : u.role === "manager"
+                      ? "Everything except staff accounts"
+                      : ((u.tabs || []).map((t) => ALL_TABS.find((n) => n.id === t)?.label).filter(Boolean).join(", ") || "None") + (u.canEditRecords ? " · can edit records" : "")}
                 </td>
                 <td className="px-4 py-3">
                   {u.active !== false ? <Pill color={EMERALD}>Active</Pill> : <Pill color={ROSE}>Blocked</Pill>}
@@ -1792,6 +1829,7 @@ function StaffFormModal({ initial, onClose, onSave }) {
   const [pin, setPin] = useState("");
   const [role, setRole] = useState(initial?.role === "manager" ? "manager" : initial?.role === "staff" ? "staff" : "staff");
   const [tabs, setTabs] = useState(initial?.tabs || ["dashboard", "sale"]);
+  const [canEditRecords, setCanEditRecords] = useState(!!initial?.canEditRecords);
   const [err, setErr] = useState("");
 
   const toggleTab = (id) => setTabs((t) => (t.includes(id) ? t.filter((x) => x !== id) : [...t, id]));
@@ -1802,8 +1840,8 @@ function StaffFormModal({ initial, onClose, onSave }) {
     if (!initial && pin.length !== 6) { setErr("PIN must be exactly 6 digits."); return; }
     if (role === "staff" && tabs.length === 0) { setErr("Give access to at least one section."); return; }
     const data = initial
-      ? { name: name.trim(), role, tabs }
-      : { name: name.trim(), username: slugUser(name), tabs, pin, role };
+      ? { name: name.trim(), role, tabs, canEditRecords }
+      : { name: name.trim(), username: slugUser(name), tabs, pin, role, canEditRecords };
     onSave(data);
   };
 
@@ -1847,6 +1885,14 @@ function StaffFormModal({ initial, onClose, onSave }) {
               })}
             </div>
           </div>
+        )}
+        {role === "staff" && (
+          <label className="flex items-start gap-2 text-sm px-3 py-2 rounded-md border cursor-pointer" style={{ borderColor: canEditRecords ? GOLD : "#e7e0d3", background: canEditRecords ? "#fdf5e8" : "white" }}>
+            <input type="checkbox" className="mt-0.5" checked={canEditRecords} onChange={(e) => setCanEditRecords(e.target.checked)} />
+            <span>Allow editing invoices, challans &amp; client records
+              <div className="text-[11px] text-slate-400 font-normal">Off by default — turn on only for staff you trust to correct mistakes in existing sales and client info.</div>
+            </span>
+          </label>
         )}
         {err && <div className="text-xs px-3 py-2 rounded-md" style={{ background: ROSE + "1a", color: ROSE }}>{err}</div>}
         <div className="flex justify-end gap-2 pt-2">
@@ -2211,7 +2257,7 @@ function AdSettingsCard({ notify, notifyErr }) {
   const save = async () => {
     setSaving(true);
     try {
-      await setDoc(adRef, { enabled, imageUrl: imagePreview || "", caption: caption.trim(), link: link.trim() }, { merge: true });
+      await setDoc(adRef, { enabled, imageUrl: imagePreview || "", caption: caption.trim(), link: normalizeUrl(link) }, { merge: true });
       notify("Advertisement saved");
     } catch (e) { notifyErr(e); } finally { setSaving(false); }
   };

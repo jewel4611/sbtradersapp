@@ -20,6 +20,13 @@ service cloud.firestore {
     // .get() with a default so accounts created before this field existed
     // don't error out — they're just treated as false (safe default).
     function canManageAccounts() { return isAdmin() && me().get('canManageAccounts', false) == true; }
+    // A Staff account only gets edit rights on invoices/challans/clients
+    // if Jewel explicitly turned that on for them individually — off by
+    // default. Moderator and Admin always have it via isAdminOrManager().
+    function canEditFull() {
+      return isAdminOrManager()
+        || (isActiveUser() && role() == 'staff' && me().get('canEditRecords', false) == true);
+    }
 
     // True if the signed-in user is allowed into the given section
     // ('dashboard' | 'stock' | 'sale' | 'invoices' | 'clients').
@@ -103,26 +110,26 @@ service cloud.firestore {
 
     match /products/{id} {
       allow read: if hasTab('stock') || hasTab('sale') || hasTab('dashboard');
-      allow update: if hasTab('stock') || hasTab('sale') || isAdminOrManager();
+      allow update: if hasTab('stock') || hasTab('sale') || canEditFull();
       allow create, delete: if hasTab('stock') || isAdminOrManager();
     }
 
     match /clients/{id} {
       allow read: if hasTab('clients') || hasTab('sale') || hasTab('dashboard');
       allow create: if hasTab('clients') || hasTab('sale');
-      allow update, delete: if isAdminOrManager();
+      allow update, delete: if canEditFull();
     }
 
     match /invoices/{id} {
       allow read: if hasTab('invoices') || hasTab('dashboard') || hasTab('clients');
       allow create: if hasTab('sale');
-      allow update, delete: if isAdminOrManager();
+      allow update, delete: if canEditFull();
     }
 
     match /payments/{id} {
       allow read: if hasTab('clients') || hasTab('dashboard');
       allow create: if hasTab('clients') || hasTab('sale');
-      allow update, delete: if isAdminOrManager();
+      allow update, delete: if canEditFull();
     }
 
     match /meta/counters {
